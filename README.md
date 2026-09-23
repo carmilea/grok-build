@@ -11,37 +11,63 @@
 > Windows is not shipped — upstream supports macOS and Linux build hosts
 > only (see "Building from source" below).
 >
-> ### Fork patches (verified by `make doctor`)
+> ### What the fork changes
 >
-> 1. **Telemetry hard-disabled** — `resolve_telemetry_mode()` returns `Disabled`
->    unconditionally (Mixpanel, product-events, OTEL spans, session metrics,
->    trace uploads, Sentry); immune to server-pushed `remote_settings`.
->    Your own external OTEL collector (`GROK_EXTERNAL_OTEL`) stays available.
-> 2. **Startup phone-home beacons disabled** — no `GET /v1/settings`
->    (carried auth + user-id + email) and no `GET /v1/login-config`
->    (carried an `agent_id` machine fingerprint).
-> 3. **Reasoning provenance guard** — unsigned/foreign reasoning (e.g. Kimi)
->    is dropped from Anthropic requests instead of replaying as an invalid
->    `thinking` block → prevents `400 Invalid signature` after model switches.
-> 4. **Access gate fails open** — with remote fetches disabled no `allow_access`
->    verdict can arrive, so stale cached verdicts are never enforced.
-> 5. **Compaction can be pinned to its own model** — `[compaction] model` /
->    `effort` (or `GROK_COMPACTION_MODEL` / `GROK_COMPACTION_EFFORT`) summarize
->    with a chosen `[models]` entry instead of the session's model, using that
->    entry's own endpoint and key. Unset keeps today's behavior; a pinned model
->    that fails falls back to the session model once.
+> Full inventory with code sites: [PATCH.MD](PATCH.MD) (15 patches, 17 guard
+> sites, re-application recipes). Threat model + per-path egress analysis:
+> [SECURITY-EGRESS.md](SECURITY-EGRESS.md). Everything below is verified by
+> `make audit` (29 behavioral checks) and `make doctor` on every commit.
 >
->    ```toml
->    [compaction]
->    model = "sonnet"   # a [models] entry id
->    effort = "xhigh"
->    ```
-> 6. **`/api-model-update`** — refresh your BYOK `[model.*]` entries from each
->    provider's live model list: new Kimi/Opus releases become usable, retired
->    ones are trimmed. `/api-model-update` prints the plan and writes nothing;
->    `/api-model-update apply moonshot` writes it (backing up `config.toml`
->    first) for Moonshot only. A provider that errors is never trimmed, and
->    entries pinned by `[models]` or in use by the session are always kept.
+> **Privacy guards (upstream features disabled):**
+>
+> - **Telemetry, product events, session metrics, Mixpanel, trace uploads** —
+>   hard-disabled at the resolver and inside the telemetry client itself
+>   (patches 1/1b). Your own external OTEL collector stays available.
+> - **Remote settings & managed-config sync** — the server-push channels that
+>   could re-enable any of the above are dead (2, 6); the external OTEL stream
+>   is off (5); error reporting/Sentry is off (7/7b).
+> - **Startup phone-home beacons** — no `GET /v1/settings` (auth + user-id +
+>   email) and no `GET /v1/login-config` (machine-fingerprint `agent_id`) (2b).
+> - **Access gate fails open** — no `allow_access` verdict can ever arrive, so
+>   stale cached verdicts are never enforced (4).
+> - **Session sharing stripped** — no uploading conversations to public links (8).
+> - **Auto-update disabled** — upstream binaries can't replace the patched
+>   build; updates arrive only via this repo's releases (10).
+> - **Feedback trace upload refused** — upstream 1.0.38 can tar the whole
+>   session directory (system prompt, history, every file the agent read) to
+>   GCS while deliberately bypassing the `trace_upload` flag; the fork refuses
+>   unconditionally (11).
+> - **Third-party keys never reach xAI** — the "side-call bearer" for voice
+>   STT / image generation / tokenization only accepts credentials from
+>   xAI-hosted model entries, so a Moonshot or Anthropic key can never be sent
+>   to `api.x.ai` (12).
+> - **Reasoning provenance guard** — unsigned/foreign `thinking` blocks are
+>   dropped from Anthropic-bound requests instead of replaying as invalid
+>   signatures (3).
+>
+> **Fork features (added, not just disabled):**
+>
+> - **`web_search` for Moonshot and Anthropic** (patch 9) — upstream speaks
+>   only xAI's Responses API; the fork adds Moonshot's `$web_search` builtin
+>   and Anthropic's `web_search_20250305` server tool (x-api-key auth,
+>   domain filters native), dispatched per `[models]` entry's `api_backend`.
+> - **Compaction model pinning** (patch 13) — `[compaction] model` / `effort`
+>   (or `GROK_COMPACTION_MODEL` / `GROK_COMPACTION_EFFORT`) summarize with a
+>   chosen `[models]` entry and its own endpoint/key; unset keeps the session
+>   model, and a failed pin retries once on the session model.
+>
+>   ```toml
+>   [compaction]
+>   model = "sonnet"   # a [models] entry id
+>   effort = "xhigh"
+>   ```
+>
+> - **`/api-model-update`** (patch 14) — refresh BYOK `[model.*]` entries
+>   from each provider's live model list: new Kimi/Opus releases become
+>   usable, retired ones trimmed. Dry-run by default; `apply` writes
+>   (backing up `config.toml` first); a provider that errors is never
+>   trimmed, and entries referenced by `[models]` roles or the session are
+>   always kept. Works headless: `grok -p "/api-model-update"`.
 >
 > ### Install
 >
@@ -56,7 +82,8 @@
 > ### Working on this fork
 >
 > ```sh
-> make doctor     # verify remotes, gh auth, install link, and all patch guards
+> make doctor     # verify remotes, gh auth, installs, and all patch guards
+> make audit      # behavioral egress audit — MUST be clean before any merge
 > make build      # release build of the repo checkout (dev)
 > brew install carmilea/grok/grok   # daily driver (primary)
 > make test       # fast gate: every crate the patches touch
@@ -65,11 +92,19 @@
 >                        # overrides (internal remotes/flows) go in local.mk
 > ```
 >
+> **Hard rules** (enforced in CI): `make audit` is never red at merge time, and
+> everything pushed — commits, merges, tags, PRs — is authored only by the
+> owner (`carmilea`); no bot, agent, upstream, or co-author identities, and
+> history intentionally carries no upstream commits (orphan model, PATCH.MD
+> §3). CI (`.github/workflows/test.yml`) runs the authorship check, the egress
+> audit, and the fast test gate on every push and PR; `release.yml` builds the
+> tagged releases and keeps the Homebrew formula current.
+>
 > Notes: the full shell test suite needs `RUST_MIN_STACK=16777216` (set by the
 > Makefile); ~27 upstream tests fail identically on pristine `upstream/main` on
 > macOS (env/platform, not the fork); tests asserting behavior the patches
 > intentionally disable are `#[ignore]`d with an explanatory note.
-> See the `Makefile` header for guard locations and the full runbook.
+> See [PATCH.MD](PATCH.MD) for the full sync runbook.
 
 ---
 
