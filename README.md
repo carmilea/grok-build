@@ -25,6 +25,12 @@
 >    `thinking` block → prevents `400 Invalid signature` after model switches.
 > 4. **Access gate fails open** — with remote fetches disabled no `allow_access`
 >    verdict can arrive, so stale cached verdicts are never enforced.
+> 5. **`/api-model-update`** — refresh your BYOK `[model.*]` entries from each
+>    provider's live model list: new Kimi/Opus releases become usable, retired
+>    ones are trimmed. `/api-model-update` prints the plan and writes nothing;
+>    `/api-model-update apply moonshot` writes it (backing up `config.toml`
+>    first) for Moonshot only. A provider that errors is never trimmed, and
+>    entries pinned by `[models]` or in use by the session are always kept.
 >
 > ### Install
 >

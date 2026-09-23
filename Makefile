@@ -133,7 +133,8 @@ test: ## Fast gate: all crates the fork patches touch
 	cargo test -p xai-grok-login --lib
 	cargo test -p xai-grok-shell --lib -- agent::config remote::client agent::mvp_agent \
 	  agent::remote_config agent::app::tests telemetry features login_config \
-	  extensions::feedback
+	  extensions::feedback api_model_update session::slash_commands
+	cargo test -p xai-grok-pager --lib slash::commands::api_model_update
 
 test-full: ## Full xai-grok-shell lib suite (needs RUST_MIN_STACK, set above)
 	cargo test -p xai-grok-shell --lib
@@ -240,3 +241,4 @@ doctor: ## Verify remotes, PAT, install symlink, and fork patch guards are prese
 	@grep -q "AUTO-UPDATE HARD-DISABLED" crates/codegen/xai-grok-update/src/auto_update.rs && echo "10. auto-update disabled  OK" || echo "10. auto-update disabled  MISSING!"
 	@grep -q "FEEDBACK TRACE UPLOAD HARD-DISABLED" crates/codegen/xai-grok-shell/src/extensions/feedback_trace.rs && echo "11. feedback trace upload OK" || echo "11. feedback trace upload MISSING!"
 	@grep -q "BYOK SIDE-CALL BEARER XAI-ONLY" crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs && echo "12. side-call bearer xai-only OK" || echo "12. side-call bearer xai-only MISSING!"
+	@grep -q "FORK PATCH 14" crates/codegen/xai-grok-pager/src/slash/commands/api_model_update.rs && echo "14. api-model-update cmd OK" || echo "14. api-model-update cmd MISSING!"

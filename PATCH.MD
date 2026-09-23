@@ -23,9 +23,11 @@ ever appears, rewrite before pushing — do not merge around it.
 
 ## 1. Patch inventory
 
-Fifteen guard sites across thirteen patches (patches 1 and 7 each span two
+Sixteen guard sites across fourteen patches (patches 1 and 7 each span two
 files — the shell-side resolver and an in-crate client that has its own
-independent entry points). Each carries a `(... fork patch)` marker comment
+independent entry points; number 13 is claimed by a patch that has not landed
+on this branch, so the numbering skips it here). Each carries a
+`(... fork patch)` marker comment
 the audit/doctor greps for. If a marker disappears in a merge, the patch is
 gone — re-apply.
 
@@ -46,6 +48,7 @@ gone — re-apply.
 | 10 | Auto-update disabled | `run_update_if_available()` + `check_update_background()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
 | 11 | Feedback trace upload disabled | `handle_upload_trace_with_session_dir()` | `crates/codegen/xai-grok-shell/src/extensions/feedback_trace.rs` | `FEEDBACK TRACE UPLOAD HARD-DISABLED` |
 | 12 | Side-call bearer xAI-only | `byok_from_models()` | `crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs` | `BYOK SIDE-CALL BEARER XAI-ONLY` |
+| 14 | API model-list refresh command (feature) | `ApiModelUpdateCommand` (pager) + `api_model_update::run()` (shell) | `crates/codegen/xai-grok-pager/src/slash/commands/api_model_update.rs`, `crates/codegen/xai-grok-shell/src/api_model_update/` | `FORK PATCH 14` |
 
 Patch 1 is the keystone: Mixpanel, product events, the internal OTLP span
 pipeline, session metrics, and the trace-upload default all gate on it.
@@ -306,6 +309,56 @@ own provider are unaffected. Entries with xAI endpoints keep working —
 voice/imagine. On syncs: the function is small; re-apply by re-wrapping each
 `own_credential()` tier, and keep the audit's behavioral check (the body
 must reference `is_trusted_xai_https_url`) as the arbiter.
+
+### Patch 14 — API model-list refresh command (feature, not a guard)
+
+BYOK `[model.<id>]` entries are hand-written, so a newly released Kimi or Opus
+is unusable until the user edits `config.toml`, and a retired model stays in
+the picker until it 404s mid-turn. `/api-model-update` (alias `/model-update`)
+asks each configured provider for its own live list and reconciles the user's
+`config.toml` against it.
+
+Three pieces, all fork-only:
+
+- `xai-grok-shell/src/api_model_update/` — `discovery.rs` (one `GET
+  {base_url}/models` per unique `(base_url, api_backend)` pair: Bearer for
+  `chat_completions`, `x-api-key` + `anthropic-version: 2023-06-01` for
+  `messages`), `reconcile.rs` (pure add/trim/keep planning), `write.rs`
+  (`toml_edit` edit that preserves every untouched byte), `mod.rs`
+  (orchestration + the plan report).
+- `xai-grok-shell/src/session/slash_commands.rs` + `acp_session_impl/slash_exec.rs`
+  — the shell builtin and its handler, so headless `grok -p "/api-model-update"`
+  works too. `ModelAuthoredEligibility::Denied`: the model may not invoke a
+  command that rewrites `config.toml`.
+- `xai-grok-pager/src/slash/commands/api_model_update.rs` — the pager builtin
+  (marker site `make doctor` greps), shadowing the ACP entry so the dropdown
+  can suggest `apply`; every form passes through to the shell.
+
+Safety rules the tests pin, and that any refactor must keep:
+
+1. **Never trim on failure.** Transport error, non-2xx, malformed JSON, and a
+   paginated (`has_more`) answer are all reported and change nothing for that
+   provider.
+2. **Never trim a referenced entry.** Anything named by a `[models]` value
+   (`default`, `web_search`, and every other pin, including array members) or
+   in use by the current session is reported as "would trim but referenced".
+3. **Always back up.** `apply` writes `config.toml.bak-<rfc3339>` before the
+   atomic publish, under the same write lock the settings path uses, and
+   aborts if the file changed while providers were being queried.
+4. **Credentials stay with their own endpoint.** Requests are grouped by
+   `base_url`, and a group is authenticated only by the credential its own
+   entries carry — the patch 12 trust rule, held at a second site.
+
+Deliberately out of scope: `responses` entries (the xAI catalog is managed
+upstream), entries with `mtls_cert_dir` (this command sends no client
+certificate), and entries with no `base_url`; all three are listed as
+unchecked and left alone. Only `$GROK_HOME/config.toml` is ever written.
+
+On syncs: nothing upstream touches these files, but the pager builtin's
+trigger keys (`api-model-update`, `model-update`) must stay in the shell's
+`PAGER_COMMAND_KEYS` — the pager contract test
+`pager_builtin_triggers_are_reserved_in_shell` fails loudly if a merge drops
+them.
 
 ---
 
