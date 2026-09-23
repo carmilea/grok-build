@@ -209,6 +209,21 @@ impl SessionActor {
                 self.send_host_turn_slash_command_output(&msg).await;
                 ok_end_turn(0, None)
             }
+            // FORK PATCH 14 (api model-list refresh): the session model is passed in
+            // so the entry this session would use is reported, never trimmed.
+            BuiltinAction::ApiModelUpdate {
+                apply,
+                provider_filter,
+            } => {
+                let report = crate::api_model_update::run(crate::api_model_update::UpdateRequest {
+                    apply,
+                    provider_filter,
+                    session_model: Some(self.models_manager.current_model_id().0.to_string()),
+                })
+                .await;
+                self.send_host_turn_slash_command_output(&report).await;
+                ok_end_turn(0, None)
+            }
             BuiltinAction::PluginsList => {
                 let text = match &*self.plugin_registry.borrow() {
                     Some(registry) if !registry.is_empty() => {

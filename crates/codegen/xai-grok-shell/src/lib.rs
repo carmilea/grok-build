@@ -13,6 +13,9 @@ static DHAT_ALLOC: dhat::Alloc = dhat::Alloc;
 pub(crate) use xai_grok_telemetry::unified_log;
 pub use xai_tracing_macros::{teprintln, timed, tprintln};
 pub mod agent;
+// FORK PATCH 14 (api model-list refresh): backs the `/api-model-update` slash
+// command; see `api_model_update/mod.rs` for why it exists.
+pub mod api_model_update;
 pub mod auth {
     pub use crate::agent::init::run_cli_logout;
     pub use crate::credential_factory::{

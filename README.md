@@ -36,6 +36,12 @@
 >    model = "sonnet"   # a [models] entry id
 >    effort = "xhigh"
 >    ```
+> 6. **`/api-model-update`** — refresh your BYOK `[model.*]` entries from each
+>    provider's live model list: new Kimi/Opus releases become usable, retired
+>    ones are trimmed. `/api-model-update` prints the plan and writes nothing;
+>    `/api-model-update apply moonshot` writes it (backing up `config.toml`
+>    first) for Moonshot only. A provider that errors is never trimmed, and
+>    entries pinned by `[models]` or in use by the session are always kept.
 >
 > ### Install
 >

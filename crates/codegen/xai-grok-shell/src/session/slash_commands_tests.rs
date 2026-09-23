@@ -224,6 +224,60 @@ fn always_approve_parses_on_off() {
     }
 }
 
+/// FORK PATCH 14 (api model-list refresh): bare is the dry run, `apply` writes,
+/// and a spare word is the provider filter — in either order.
+#[test]
+fn api_model_update_parses_apply_and_provider_filter() {
+    assert!(matches!(
+        resolve_builtin("api-model-update", ""),
+        Some(BuiltinAction::ApiModelUpdate {
+            apply: false,
+            provider_filter: None
+        })
+    ));
+    assert!(matches!(
+        resolve_builtin("api-model-update", "apply"),
+        Some(BuiltinAction::ApiModelUpdate {
+            apply: true,
+            provider_filter: None
+        })
+    ));
+    assert!(matches!(
+        resolve_builtin("api-model-update", "moonshot apply"),
+        Some(BuiltinAction::ApiModelUpdate { apply: true, provider_filter: Some(filter) })
+            if filter == "moonshot"
+    ));
+}
+
+/// FORK PATCH 14 (api model-list refresh): the alias the pager also registers.
+#[test]
+fn model_update_alias_resolves_to_api_model_update() {
+    let blocks = vec![text_block("/model-update apply")];
+    let outcome = resolve(blocks, &[], all_gated(), SkillSlashRewrite::default(), &[]).unwrap_err();
+    assert!(matches!(
+        outcome,
+        SlashCommandOutcome::Builtin(BuiltinAction::ApiModelUpdate { apply: true, .. })
+    ));
+}
+
+/// FORK PATCH 14 (api model-list refresh): the model may not run a command that
+/// rewrites config.toml, under either trigger key.
+#[test]
+fn api_model_update_is_not_model_authored_eligible() {
+    for text in ["/api-model-update", "/api-model-update apply", "/model-update"] {
+        assert!(
+            matches!(
+                crate::session::slash_authority::resolve(
+                    &[text_block(text)],
+                    crate::session::slash_commands::BUILTIN_COMMANDS
+                ),
+                crate::session::slash_authority::AuthorityResolution::ModelAuthoredSkillCandidate { .. }
+            ),
+            "model-authored {text} must not reach the builtin"
+        );
+    }
+}
+
 #[test]
 fn yolo_alias_resolves_to_always_approve() {
     let blocks = vec![text_block("/yolo on")];
@@ -609,6 +663,9 @@ fn available_commands_orders_builtins_first() {
             "plugins",
             "reload-plugins",
             "session-info",
+            // FORK PATCH 14 (api model-list refresh): advertised between
+            // session-info and feedback, matching its BUILTIN_COMMANDS slot.
+            "api-model-update",
             "feedback",
             "deep-research",
             "workflow",

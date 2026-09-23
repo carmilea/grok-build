@@ -104,6 +104,11 @@ the catalog falls back to the session model rather than to any default
 endpoint. Worth knowing when reviewing where a transcript can go: with a pin
 set, the compaction summary's provider is a *second* provider in the session.
 
+Note on patch 14 (api model-list refresh): `/api-model-update` adds outbound
+`GET {base_url}/models` requests to the user's own configured providers. No
+conversation content, no POST (so neither census counts it), user-initiated
+only — see §2.11.
+
 > The audit checks guard 1 **behaviorally** (asserts the actual
 > `Resolved::new(TelemetryMode::Disabled, …)` return), not by comment. `make
 > doctor` greps for comment strings only — it proves a comment exists, not that
@@ -311,6 +316,18 @@ user-chosen content. Accepted.
 discovered OIDC `token_endpoint` to refresh an access token ahead of expiry.
 Unreachable unless `COMPUTER_HUB_URL` is configured (the computer-hub feature
 itself is opt-in and off by default). Dormant. Accepted.
+
+### 2.11 `/api-model-update` model-list fetch — patch 14, user-initiated
+
+`api_model_update/discovery.rs` sends one `GET {base_url}/models` per unique
+`(base_url, api_backend)` pair in the user's own `[model.*]` entries, and only
+when the user runs `/api-model-update`. The request has no body — no prompt,
+no conversation, no filenames — and carries only that pair's own credential
+(Bearer, or `x-api-key` + `anthropic-version` for Messages), so the patch 12
+rule that a credential never leaves its own endpoint holds here too. `responses`
+entries are skipped, so the command never queries the xAI catalog. Same trust
+boundary as inference to the same entry. Accepted. Neither census pattern
+matches a `GET`, which is why the path is recorded here explicitly.
 
 ---
 

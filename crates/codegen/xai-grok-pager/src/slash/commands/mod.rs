@@ -1,6 +1,8 @@
 //! Each command lives in its own submodule. This module re-exports command structs and provides `builtin_commands()` for registry construction.
 pub mod always_approve;
 pub mod announcements;
+// FORK PATCH 14 (api model-list refresh): BYOK catalog refresh command.
+pub mod api_model_update;
 pub mod auto;
 pub mod btw;
 pub mod cd;
@@ -149,6 +151,8 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(feedback::FeedbackCommand),
         Arc::new(privacy::PrivacyCommand),
         Arc::new(doctor::DoctorCommand),
+        // FORK PATCH 14 (api model-list refresh): one-off maintenance, next to /doctor.
+        Arc::new(api_model_update::ApiModelUpdateCommand),
         Arc::new(import_claude::ImportClaudeCommand),
         Arc::new(login::LoginCommand),
         Arc::new(logout::LogoutCommand),
