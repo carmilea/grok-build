@@ -220,11 +220,31 @@ jobs:
           sha256="$(sha256sum "$asset" | cut -d' ' -f1)"
 
           formula="tap/Formula/grok.rb"
+          prev_version="$(sed -n 's|^  version \"\(.*\)\"|\1|p' "$formula" | head -1)"
+          prev_sha="$(sed -n 's|^  sha256 \"\(.*\)\"|\1|p' "$formula" | head -1)"
+          prev_revision="$(sed -n 's|^  revision \([0-9][0-9]*\)$|\1|p' "$formula" | head -1)"
+
           sed -i \
             -e "s|^  version \".*\"|  version \"${v}\"|" \
             -e "s|^  url \".*\"|  url \"${url}\"|" \
             -e "s|^  sha256 \".*\"|  sha256 \"${sha256}\"|" \
             "$formula"
+
+          # Homebrew only treats a same-version formula as an upgrade when
+          # `revision` bumps. Our version is crate-derived (X.Y.Z-s), so an
+          # RC -> official move or a .N fork bump keeps the same string:
+          # fresh version -> reset revision; same version, new sha -> bump.
+          if [ "$prev_version" != "$v" ]; then
+            sed -i '/^  revision [0-9][0-9]*$/d' "$formula"
+          elif [ "$prev_sha" != "$sha256" ]; then
+            next=$(( ${prev_revision:-0} + 1 ))
+            if [ -n "$prev_revision" ]; then
+              sed -i "s|^  revision [0-9][0-9]*\$|  revision ${next}|" "$formula"
+            else
+              awk -v n="$next" '{print} /^  sha256 / && !d {print "  revision " n; d=1}' \
+                "$formula" > "$formula.tmp" && mv "$formula.tmp" "$formula"
+            fi
+          fi
           cat "$formula"
 
       - name: Commit and push if changed
