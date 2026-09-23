@@ -428,6 +428,10 @@ pub(crate) async fn generate_session_compact(
             let mut message =
                 ChatCompletionRequest::new(sampling_config.model.to_owned(), chat_messages)
                     .with_temperature(1.0);
+            // FORK PATCH 13 (compaction model+effort pinning): carry the config's effort onto the wire.
+            // Upstream builds this request without one, so `[compaction] effort` (and the pinned entry's
+            // own effort) would resolve correctly and then never reach the provider.
+            message.reasoning_effort = sampling_config.reasoning_effort;
             // Prefix-cache alignment (see doc comment)
             // `tool_choice` is set only when tools are present; Chat Completions rejects it otherwise
             if !tools.is_empty() {
@@ -537,6 +541,8 @@ pub(crate) async fn generate_session_compact(
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
+                // FORK PATCH 13: see the Chat Completions arm — the config's effort must reach the wire.
+                reasoning_effort: sampling_config.reasoning_effort,
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
@@ -660,6 +666,9 @@ pub(crate) async fn generate_session_compact(
                 hosted_tools,
                 model: Some(sampling_config.model.to_owned()),
                 temperature: Some(1.0),
+                // FORK PATCH 13: see the Chat Completions arm — the config's effort must reach the wire.
+                // On Messages this becomes the `thinking` budget (`None`/`Minimal` stay omitted).
+                reasoning_effort: sampling_config.reasoning_effort,
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),

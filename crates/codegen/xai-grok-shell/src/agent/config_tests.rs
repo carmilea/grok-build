@@ -1145,6 +1145,140 @@ fn effective_classifier_supports_re_uses_actually_used_model() {
     ));
     assert!(!effective_classifier_supports_re(None, "missing", &models));
 }
+/// FORK PATCH 13 (compaction model+effort pinning): the catalog half of the pin.
+/// A Sonnet-shaped Messages entry with its own key and a declared effort menu, so the tests below can
+/// assert that a pinned compaction call gets the entry's endpoint, backend, credential and effort — and
+/// never the session's.
+fn compaction_pin_entry() -> ModelEntry {
+    let mut entry = test_model_entry(
+        "claude-sonnet-5",
+        "https://api.anthropic.com/v1",
+        Some("anthropic-key"),
+        None,
+        None,
+    );
+    entry.info.api_backend = ApiBackend::Messages;
+    entry.info.reasoning_efforts = vec![
+        ReasoningEffortOption {
+            id: "high".into(),
+            value: ReasoningEffort::High,
+            label: "High".into(),
+            description: None,
+            default: true,
+        },
+        ReasoningEffortOption {
+            id: "xhigh".into(),
+            value: ReasoningEffort::Xhigh,
+            label: "Xhigh".into(),
+            description: None,
+            default: false,
+        },
+    ];
+    entry
+}
+fn compaction_pin_catalog() -> IndexMap<String, ModelEntry> {
+    let mut catalog = IndexMap::new();
+    catalog.insert("sonnet-compactor".to_string(), compaction_pin_entry());
+    catalog
+}
+#[test]
+fn compaction_pin_routes_to_the_entry_endpoint_backend_and_credential() {
+    let resolved = compaction_sampling_config_for(
+        "sonnet-compactor",
+        Some(ReasoningEffort::Xhigh),
+        &compaction_pin_catalog(),
+        Some("session-jwt"),
+        false,
+        None,
+        None,
+    )
+    .expect("a catalog entry resolves");
+    assert_eq!(resolved.model, "claude-sonnet-5");
+    assert_eq!(resolved.base_url, "https://api.anthropic.com/v1");
+    assert_eq!(resolved.api_backend, ApiBackend::Messages);
+    assert_eq!(resolved.reasoning_effort, Some(ReasoningEffort::Xhigh));
+    assert_eq!(
+        resolved.api_key.as_deref(),
+        Some("anthropic-key"),
+        "the pinned entry must authenticate with its own credential, never the session token"
+    );
+}
+#[test]
+fn compaction_pin_unknown_model_id_resolves_to_nothing() {
+    assert!(
+        compaction_sampling_config_for(
+            "typo-compactor",
+            Some(ReasoningEffort::Xhigh),
+            &compaction_pin_catalog(),
+            None,
+            false,
+            None,
+            None,
+        )
+        .is_none(),
+        "an unknown id must fall back to the session config, not invent an endpoint"
+    );
+}
+#[test]
+fn compaction_pin_without_effort_keeps_the_entry_effort() {
+    let mut catalog = compaction_pin_catalog();
+    catalog
+        .get_mut("sonnet-compactor")
+        .expect("entry")
+        .info
+        .reasoning_effort = Some(ReasoningEffort::Medium);
+    let resolved =
+        compaction_sampling_config_for("sonnet-compactor", None, &catalog, None, false, None, None)
+            .expect("a catalog entry resolves");
+    assert_eq!(resolved.reasoning_effort, Some(ReasoningEffort::Medium));
+}
+#[test]
+fn compaction_effort_not_offered_falls_back_to_the_entry_default() {
+    let entry = compaction_pin_entry();
+    assert_eq!(
+        compaction_effort_for_entry(entry.info(), ReasoningEffort::Xhigh),
+        Some(ReasoningEffort::Xhigh),
+        "an offered effort is used as requested"
+    );
+    assert_eq!(
+        compaction_effort_for_entry(entry.info(), ReasoningEffort::Low),
+        Some(ReasoningEffort::High),
+        "an effort the menu does not offer falls back to the entry's default option"
+    );
+    let no_menu = compaction_pin_entry();
+    let mut no_menu = no_menu;
+    no_menu.info.reasoning_efforts = Vec::new();
+    assert_eq!(
+        compaction_effort_for_entry(no_menu.info(), ReasoningEffort::Low),
+        Some(ReasoningEffort::Low),
+        "an entry that declares no menu takes the requested effort as-is"
+    );
+}
+/// A model with per-effort ids must send the id it uses at the effort compaction actually asks for.
+#[test]
+fn compaction_pin_routes_variants_by_effort() {
+    let mut catalog = compaction_pin_catalog();
+    catalog
+        .get_mut("sonnet-compactor")
+        .expect("entry")
+        .info
+        .variants = vec![ModelVariant {
+        effort: ReasoningEffort::Xhigh,
+        model_id: "claude-sonnet-5-thinking".to_string(),
+    }];
+    let resolved = compaction_sampling_config_for(
+        "sonnet-compactor",
+        Some(ReasoningEffort::Xhigh),
+        &catalog,
+        None,
+        false,
+        None,
+        None,
+    )
+    .expect("a catalog entry resolves");
+    assert_eq!(resolved.model, "claude-sonnet-5-thinking");
+    assert_eq!(resolved.reasoning_effort, Some(ReasoningEffort::Xhigh));
+}
 #[test]
 fn sampling_config_uses_model_api_key_over_fallback() {
     let model = test_model_entry(

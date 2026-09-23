@@ -94,6 +94,16 @@ xAI entry). Same trust boundary as inference calls: user-chosen content to a
 user-chosen endpoint, out of scope for this audit. The three `.post(` sites
 are accepted in the egress baseline with this justification.
 
+Note on patch 13 (compaction model+effort pinning): `[compaction] model` sends
+the compaction request — which carries the **whole conversation** — to that
+`[models]` entry's endpoint instead of the session's. No new call site (it
+reuses the sampler transport, so the census is unchanged), and the same trust
+boundary as any model switch: the pinned entry authenticates with its own
+credential at its own `base_url` (patch 12's rule), and an id that is not in
+the catalog falls back to the session model rather than to any default
+endpoint. Worth knowing when reviewing where a transcript can go: with a pin
+set, the compaction summary's provider is a *second* provider in the session.
+
 Note on patch 14 (api model-list refresh): `/api-model-update` adds outbound
 `GET {base_url}/models` requests to the user's own configured providers. No
 conversation content, no POST (so neither census counts it), user-initiated
