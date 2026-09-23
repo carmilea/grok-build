@@ -1,0 +1,239 @@
+name: release
+
+# Release pipeline for the fork. Push a fork-* tag (see PATCH.MD §3 step 7:
+# `git tag -a fork-<UPSTREAM>.<N>`) to build grok for Linux and macOS and
+# publish the binaries on a GitHub Release. Windows is intentionally absent:
+# upstream supports macOS and Linux build hosts; Windows builds are
+# best-effort and untested from this tree.
+#
+# workflow_dispatch builds the same matrix without cutting a release
+# (artifacts only, for pipeline testing).
+
+on:
+  push:
+    tags: ['fork-*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create GitHub Releases
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Re-tagging supersedes: only the newest commit on a given fork-* tag runs.
+  cancel-in-progress: true
+
+jobs:
+  # Re-verify before shipping anything: the audit is behavioral — it checks
+  # that the privacy guards gate, not that comments exist.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/powershell /usr/share/swift || true
+          docker rmi -f $(docker images -aq) 2>/dev/null || true
+      - name: Add swap
+        run: |
+          if swapon --show | grep -q '/swapfile'; then
+            echo "swap already active:"; swapon --show
+          else
+            sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile
+            sudo mkswap /swapfile && sudo swapon /swapfile
+          fi
+      - name: Install Rust (channel from rust-toolchain.toml)
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+          rustup default "$channel"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: "false"
+      # bin/protoc is a dotslash shim for local dev; CI runners don't have
+      # dotslash, so install the same pinned protoc version instead.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '29.3'
+      - name: Egress audit
+        run: make audit
+      - name: Fast test gate
+        run: make test
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_INCREMENTAL: "0"
+          CARGO_BUILD_JOBS: "3"
+
+  build:
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free runner disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/powershell /usr/share/swift || true
+          docker rmi -f $(docker images -aq) 2>/dev/null || true
+      - name: Add swap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if swapon --show | grep -q '/swapfile'; then
+            echo "swap already active:"; swapon --show
+          else
+            sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile
+            sudo mkswap /swapfile && sudo swapon /swapfile
+          fi
+      - name: Install Rust (channel from rust-toolchain.toml)
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target "${{ matrix.target }}"
+          rustup default "$channel"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: "false"
+
+      # bin/protoc is a dotslash shim for local dev; CI runners don't have
+      # dotslash, so install the same pinned protoc version instead.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '29.3'
+
+      # Same derivation as the Makefile: the binary mirrors the crate
+      # version with a "-s" suffix (1.0.38 -> 1.0.38-s). The xai-grok-version
+      # crate stamps GROK_VERSION into the binary at compile time.
+      - name: Compute fork version
+        id: version
+        shell: bash
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/codegen/xai-grok-shell/Cargo.toml | head -1)-s"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "GROK_VERSION=$v" >> "$GITHUB_ENV"
+          echo "building grok $v"
+
+      - name: Build
+        run: cargo build --release -p xai-grok-pager-bin --target ${{ matrix.target }}
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_BUILD_JOBS: "3"
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/xai-grok-pager" dist/grok
+          # Apache-2.0 §4: distributions must carry the license; keep
+          # third-party attribution alongside.
+          cp LICENSE THIRD-PARTY-NOTICES dist/
+          tar -czf "grok-${{ steps.version.outputs.version }}-${{ matrix.name }}.tar.gz" -C dist grok LICENSE THIRD-PARTY-NOTICES
+
+      # .deb/.rpm are Linux-only artifacts; ubuntu-latest runners ship Go.
+      # Pinned (not @latest) so packaging output is reproducible across runs.
+      - name: Install nfpm
+        if: matrix.name == 'linux-x86_64'
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.39.0
+
+      - name: Build .deb/.rpm
+        if: matrix.name == 'linux-x86_64'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p deb -t "grok_${VERSION}_amd64.deb"
+          "$(go env GOPATH)/bin/nfpm" package -f packaging/nfpm.yaml -p rpm -t "grok_${VERSION}_x86_64.rpm"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grok-${{ matrix.name }}
+          path: |
+            grok-*-${{ matrix.name }}.*
+            grok_*.deb
+            grok_*.rpm
+          if-no-files-found: error
+
+  release:
+    needs: build
+    # Tag pushes only; workflow_dispatch stops at artifacts.
+    if: startsWith(github.ref, 'refs/tags/fork-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+      # Idempotent: re-fired runs on the same tag (release candidates) must
+      # not fail because the release already exists — create if missing,
+      # then upload/overwrite assets either way.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.ref_name }}"
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/codegen/xai-grok-shell/Cargo.toml | head -1)-s"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "grok $v ($tag)" --generate-notes
+          fi
+          gh release upload "$tag" grok-*/*.tar.gz grok-*/*.deb grok-*/*.rpm --clobber
+
+  # Keeps carmilea/homebrew-grok pointed at the newest release. GH_PAT is a
+  # PAT (repo scope) set via: gh auth token | gh secret set GH_PAT --repo
+  # carmilea/grok-build — GITHUB_TOKEN can't push to a different repo.
+  tap:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/fork-')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: grok-build
+      - uses: actions/checkout@v4
+        with:
+          repository: carmilea/homebrew-grok
+          token: ${{ secrets.GH_PAT }}
+          path: tap
+
+      - name: Update formula
+        run: |
+          tag="${{ github.ref_name }}"
+          v="$(sed -n 's/^version = "\(.*\)"/\1/p' grok-build/crates/codegen/xai-grok-shell/Cargo.toml | head -1)-s"
+          asset="grok-${v}-macos-arm64.tar.gz"
+          url="https://github.com/carmilea/grok-build/releases/download/${tag}/${asset}"
+
+          curl -fsSL "$url" -o "$asset"
+          sha256="$(sha256sum "$asset" | cut -d' ' -f1)"
+
+          formula="tap/Formula/grok.rb"
+          sed -i \
+            -e "s|^  version \".*\"|  version \"${v}\"|" \
+            -e "s|^  url \".*\"|  url \"${url}\"|" \
+            -e "s|^  sha256 \".*\"|  sha256 \"${sha256}\"|" \
+            "$formula"
+          cat "$formula"
+
+      - name: Commit and push if changed
+        working-directory: tap
+        run: |
+          git config user.name "grok-build-release-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "formula already up to date; nothing to push"
+            exit 0
+          fi
+          git add Formula/grok.rb
+          git commit -m "grok ${{ github.ref_name }}: update formula"
+          git push origin HEAD:main

@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.DS_Store
+graphify-out/
+.gitnexus/
+
+# Private local overrides and local tooling state — never commit these.
+local.mk
+.claude/
+excalidraw.log

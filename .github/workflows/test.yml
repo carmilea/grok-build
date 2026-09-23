@@ -1,0 +1,86 @@
+name: test
+
+# The fork's own gate (see PATCH.MD §3): never merge with a red audit.
+# Runs the behavioral egress audit first, then the fast test gate over every
+# crate the fork patches touch.
+
+on:
+  push:
+    branches: [main, 'upstream-sync-*', 'fork-patch-*', 'patch-*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fork-* tags drive GROK_VERSION via `git describe` in the Makefile.
+          fetch-depth: 0
+
+      # The test target dir of this workspace is tens of GB; runners have
+      # ~14GB free by default. Reclaim the preinstalled SDKs we don't need.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/powershell /usr/share/swift || true
+          docker rmi -f $(docker images -aq) 2>/dev/null || true
+          df -h /
+
+      # The xai-grok-shell test link is the workspace's biggest single
+      # memory peak; previous run died silently here (kernel OOM-kill).
+      # Newer runner images ship an active /swapfile already — reuse it.
+      - name: Add swap
+        run: |
+          if swapon --show | grep -q '/swapfile'; then
+            echo "swap already active:"; swapon --show
+          else
+            sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile
+            sudo mkswap /swapfile && sudo swapon /swapfile
+          fi
+          free -h
+
+      # rustup is preinstalled on hosted runners; install the channel pinned
+      # in rust-toolchain.toml. (dtolnay/rust-toolchain can't parse the
+      # `profile`/`targets` keys upstream ships in that file.)
+      - name: Install Rust (channel from rust-toolchain.toml)
+        shell: bash
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+          rustup default "$channel"
+          rustc --version
+
+      # cache-targets=false: target/ is far over the 10GB cache limit; only
+      # the dependency registry is worth caching.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: "false"
+
+      # bin/protoc is a dotslash shim for local dev (see
+      # xai-proto-build/src/find_protoc.rs); CI runners don't have dotslash,
+      # so install the same pinned protoc version instead.
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '29.3'
+
+      - name: Egress audit (MUST be clean before anything else)
+        run: make audit
+
+      - name: Fast test gate (all crates the fork patches touch)
+        run: make test
+        env:
+          # Smaller/faster test links on 16GB runners: no debuginfo, no
+          # incremental artifacts (useless on a fresh runner), capped jobs.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_INCREMENTAL: "0"
+          CARGO_BUILD_JOBS: "3"
