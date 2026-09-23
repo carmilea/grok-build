@@ -97,6 +97,7 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           version: '29.3'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Egress audit (MUST be clean before anything else)
         run: make audit

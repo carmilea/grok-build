@@ -58,6 +58,7 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           version: '29.3'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Egress audit
         run: make audit
       - name: Fast test gate
@@ -116,6 +117,7 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           version: '29.3'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Same derivation as the Makefile: the binary mirrors the crate
       # version with a "-s" suffix (1.0.38 -> 1.0.38-s). The xai-grok-version
