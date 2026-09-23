@@ -248,6 +248,26 @@ pub(super) const BUILTIN_COMMANDS: &[BuiltinCommand] = &[
         workflow_projection: WorkflowProjection::None,
         resolve: |_args| BuiltinAction::SessionInfo,
     },
+    // FORK PATCH 14 (api model-list refresh): the shell-side half of
+    // `/api-model-update`, so the pager builtin (and headless `grok -p`) reach the
+    // same reconcile. Model-authored invocation stays denied: this command can
+    // rewrite the user's config.toml. Reverting it leaves BYOK catalog upkeep manual.
+    BuiltinCommand {
+        name: "api-model-update",
+        description: "Refresh BYOK [model.*] entries from each provider's live model list",
+        argument_hint: Some("[apply] [provider substring]"),
+        aliases: &["model-update"],
+        model_authored_eligibility: ModelAuthoredEligibility::Denied,
+        gate: BuiltinGate::AlwaysOn,
+        workflow_projection: WorkflowProjection::None,
+        resolve: |args| {
+            let request = crate::api_model_update::UpdateRequest::parse(args);
+            BuiltinAction::ApiModelUpdate {
+                apply: request.apply,
+                provider_filter: request.provider_filter,
+            }
+        },
+    },
     BuiltinCommand {
         name: "feedback",
         description: "Send feedback about the current session",
@@ -446,6 +466,8 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "agents-dashboard",
     "always-approve",
     "announcements",
+    // FORK PATCH 14 (api model-list refresh): pager builtin trigger keys.
+    "api-model-update",
     "auto",
     "btw",
     "cd",
@@ -505,6 +527,8 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "minimal",
     "ml",
     "model",
+    // FORK PATCH 14 (api model-list refresh): `/api-model-update` alias.
+    "model-update",
     "multiline",
     "new",
     "onboarding",
@@ -1231,6 +1255,11 @@ pub(super) enum BuiltinAction {
     PluginsReload,
     PluginsTrust,
     SessionInfo,
+    /// FORK PATCH 14 (api model-list refresh): `apply` writes; bare is the dry run.
+    ApiModelUpdate {
+        apply: bool,
+        provider_filter: Option<String>,
+    },
     PluginsAdd {
         path: String,
     },
@@ -1289,6 +1318,7 @@ impl BuiltinAction {
             BuiltinAction::PluginsReload => "plugins-reload",
             BuiltinAction::PluginsTrust => "plugins-trust",
             BuiltinAction::SessionInfo => "session",
+            BuiltinAction::ApiModelUpdate { .. } => "api-model-update",
             BuiltinAction::PluginsAdd { .. } => "plugins-add",
             BuiltinAction::PluginsRemove { .. } => "plugins-remove",
             BuiltinAction::PluginsInstall { .. } => "plugins-install",
@@ -1322,6 +1352,10 @@ impl BuiltinAction {
             BuiltinAction::PluginsReload => false,
             BuiltinAction::PluginsTrust => false,
             BuiltinAction::SessionInfo => false,
+            BuiltinAction::ApiModelUpdate {
+                apply,
+                provider_filter,
+            } => *apply || provider_filter.is_some(),
             BuiltinAction::PluginsAdd { .. } => true,
             BuiltinAction::PluginsRemove { .. } => true,
             BuiltinAction::PluginsInstall { .. } => true,
