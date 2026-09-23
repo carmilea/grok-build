@@ -13,8 +13,8 @@ use crate::session::helpers::CompactionStateContext;
 use crate::session::helpers::compaction_context::CompactionInputs;
 use crate::session::helpers::compaction_context::to_system_reminder;
 use crate::session::helpers::session_compact::{
-    COMPACT_FAILED_PREFIX, CompactOutput, CompactionOutcome, build_compaction_prompt,
-    generate_session_compact, is_context_length_error,
+    COMPACT_FAILED_PREFIX, CompactFailure, CompactOutput, CompactionOutcome,
+    build_compaction_prompt, generate_session_compact, is_context_length_error,
 };
 use crate::session::persistence::PersistenceMsg;
 use crate::session::two_pass::{
@@ -28,6 +28,7 @@ use xai_chat_state::compaction_utils::{
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
 };
+use xai_grok_sampler::SamplerConfig as SamplingConfig;
 use xai_grok_sampling_types::{ApiBackend, ConversationItem};
 /// Prefix on the early-guard failure payloads below; the user-facing normalizer strips it (the renderer prepends its own headline).
 const COMPACTION_FAILED_GUARD_PREFIX: &str = "Compaction failed: ";
@@ -120,29 +121,164 @@ impl From<PrefireOutcome> for PrefirePass1Run {
     }
 }
 #[cfg(test)]
+#[path = "compaction_model_pin_tests.rs"]
+mod model_pin_tests;
+#[cfg(test)]
 #[path = "compaction_two_pass_prefire_helper_tests.rs"]
 mod two_pass_prefire_helper_tests;
 #[cfg(test)]
 #[path = "compaction_verbatim_input_tests.rs"]
 mod verbatim_input_tests;
+// FORK PATCH 13 (compaction model+effort pinning).
+//
+// Upstream compacts with whatever the session is sampling with. `[compaction] model` / `effort`
+// (env `GROK_COMPACTION_MODEL` / `GROK_COMPACTION_EFFORT`) pin the summarization call to one catalog
+// entry instead — "chat with kimi, compact with Sonnet at xhigh" — which is worth having because the
+// compaction summary is the only artifact the rest of the session is built on.
+//
+// Reverting this type and [`SessionActor::compaction_sampling_config`] returns both compaction call
+// sites to the session config, silently: the config keys stay parseable and stop doing anything.
+/// What one compaction attempt samples with.
+pub(crate) struct CompactionSampling {
+    /// The pinned entry's sampler config, or the session's when nothing is pinned (upstream behavior).
+    pub(crate) config: SamplingConfig,
+    /// The session config, kept only while pinned: a pinned endpoint that is down or unauthorized must
+    /// not leave the session unable to compact (and therefore unable to continue), so the call sites
+    /// retry once with this before taking the existing failure path.
+    pub(crate) session_fallback: Option<SamplingConfig>,
+}
+impl CompactionSampling {
+    /// Whether this compaction runs on a pinned model rather than the session's.
+    pub(crate) fn is_pinned(&self) -> bool {
+        self.session_fallback.is_some()
+    }
+    fn session(config: SamplingConfig) -> Self {
+        Self {
+            config,
+            session_fallback: None,
+        }
+    }
+}
+/// FORK PATCH 13: one warning per process for a `[compaction] model` that is not in the catalog.
+/// Every compaction attempt resolves the pin, so warning per attempt would spam the same typo.
+fn warn_unknown_compaction_model(model_id: &str, session_model: &str) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::debug!(
+            compaction_model = %model_id,
+            "[compaction] model is still not in the catalog; compacting with the session model"
+        );
+        return;
+    }
+    tracing::warn!(
+        compaction_model = %model_id,
+        session_model = %session_model,
+        "[compaction] model is not a known [models] entry; compacting with the session model"
+    );
+}
 impl SessionActor {
     /// Two-pass is active for this session when the flag resolved on at build and the agent is not one that keeps its single short self-summary.
     pub(crate) fn two_pass_active(&self) -> bool {
         let agent = self.agent.borrow();
         agent.compaction_policy().two_pass_enabled
     }
+    /// FORK PATCH 13 (compaction model+effort pinning): the sampler config every compaction attempt runs on.
+    ///
+    /// Unpinned — `[compaction] model` unset, blank, or absent from the catalog — this is exactly
+    /// `reconstruct_full_config()`: the session's model, endpoint, credentials and effort, i.e. upstream
+    /// behavior. Pinned, it is the named entry's own config (its `base_url`, `api_backend` and its own
+    /// credentials, never the session's) with the `[compaction] effort` override applied, plus the session
+    /// config for the call sites' one-shot fallback.
+    ///
+    /// Borrow discipline (see `two_pass_sample` below): every `RefCell`/lock read here is a synchronous
+    /// snapshot, so no borrow is held across an `.await`.
+    ///
+    /// Reverting this to `reconstruct_full_config()` at the two call sites drops the pin entirely.
+    pub(crate) async fn compaction_sampling_config(&self) -> CompactionSampling {
+        let session_config = self.reconstruct_full_config().await;
+        let pinned = crate::util::config::resolve_compaction_model();
+        let Some(model_id) = pinned.value.as_deref() else {
+            return CompactionSampling::session(session_config);
+        };
+        let effort = crate::util::config::resolve_compaction_effort();
+        let creds = self.chat_state_handle.get_credentials().await;
+        let session_key = self
+            .auth_manager
+            .as_ref()
+            .and_then(|am| am.current_or_expired().map(|a| a.key.clone()));
+        let disable_api_key_auth = self
+            .auth_manager
+            .as_ref()
+            .map(|am| am.grok_com_config().api_key_auth_disabled())
+            .unwrap_or(false);
+        let models = self.models_manager.models();
+        let Some(mut config) = crate::agent::config::compaction_sampling_config_for(
+            model_id,
+            effort.value,
+            &models,
+            session_key.as_deref(),
+            disable_api_key_auth,
+            creds.alpha_test_key.clone(),
+            creds.client_version.clone(),
+        ) else {
+            warn_unknown_compaction_model(model_id, &session_config.model);
+            return CompactionSampling::session(session_config);
+        };
+        // Identity, attribution and retries follow the session; the bearer resolver is host-gated inside
+        // (a third-party compaction endpoint keeps its own credential).
+        crate::agent::config::stamp_session_local_sampler_fields(
+            &mut config,
+            &session_config,
+            self.client_identifier.clone(),
+            session_config.max_retries,
+        );
+        tracing::info!(
+            session_id = %self.session_info.id.0,
+            compaction_model = %config.model,
+            session_model = %session_config.model,
+            reasoning_effort = ?config.reasoning_effort,
+            source = %pinned.source,
+            "compaction pinned to a configured model"
+        );
+        CompactionSampling {
+            config,
+            session_fallback: Some(session_config),
+        }
+    }
+    /// FORK PATCH 13: one two-pass summarization attempt against `config`/`client`.
+    /// Split out so the pinned attempt and the session-model retry cannot drift in their request shape.
+    #[allow(clippy::too_many_arguments)]
+    async fn two_pass_sample_once(
+        &self,
+        history: Vec<ConversationItem>,
+        config: &SamplingConfig,
+        client: crate::sampling::Client,
+        tools: Vec<xai_grok_sampling_types::ToolSpec>,
+        hosted_tools: Vec<xai_grok_sampling_types::HostedTool>,
+        compaction_tool_tokens: u64,
+        wall_clock_budget_secs: u64,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<CompactOutput, CompactFailure> {
+        generate_session_compact(
+            history,
+            compaction_tool_tokens,
+            tools,
+            hosted_tools,
+            client,
+            self.session_info.id.clone(),
+            config,
+            self.inference_idle_timeout,
+            wall_clock_budget_secs,
+            self.compaction.tool_choice,
+            cancel,
+        )
+        .await
+    }
     /// The prompt is already embedded, so this bypasses the single-pass sampler and calls `generate_session_compact` directly.
     /// Agent `RefCell` borrows are only taken for synchronous snapshots (never held across `.await`).
     /// A long-lived borrow would race with turn/compact/cancel and panic on double-borrow.
-    async fn two_pass_sample(&self, history: Vec<ConversationItem>) -> Option<CompactOutput> {
-        let sampling_config = self.reconstruct_full_config().await;
-        let client = match self.prepare_chat_completion(false).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "two_pass: failed to prepare sampling client");
-                return None;
-            }
-        };
+    async fn two_pass_sample(&self, mut history: Vec<ConversationItem>) -> Option<CompactOutput> {
+        let sampling = self.compaction_sampling_config().await;
         let tool_defs = self.prepare_tool_definitions().await;
         let tools = self.turn_base_tool_specs(&tool_defs);
         let compaction_tool_tokens = xai_chat_state::estimate_tool_specs_tokens(&tools);
@@ -153,20 +289,63 @@ impl SessionActor {
             .wall_clock_budget_secs;
         let hosted_tools = self.hosted_tools_for_turn();
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
-        match generate_session_compact(
-            history,
-            compaction_tool_tokens,
-            tools,
-            hosted_tools,
-            client,
-            self.session_info.id.clone(),
-            &sampling_config,
-            self.inference_idle_timeout,
-            wall_clock_budget_secs,
-            self.compaction.tool_choice,
-            &cancel,
-        )
-        .await
+        // FORK PATCH 13: the pinned entry has its own endpoint and credentials, so it needs its own
+        // transport. A failure here falls through to the session attempt below, which is the unpinned
+        // path untouched (`prepare_chat_completion` refreshes the token and maps the error).
+        if sampling.is_pinned() {
+            let retry_history = history.clone();
+            match xai_grok_sampler::SamplingClient::new(sampling.config.clone()) {
+                Ok(client) => {
+                    match self
+                        .two_pass_sample_once(
+                            history,
+                            &sampling.config,
+                            client,
+                            tools.clone(),
+                            hosted_tools.clone(),
+                            compaction_tool_tokens,
+                            wall_clock_budget_secs,
+                            &cancel,
+                        )
+                        .await
+                    {
+                        Ok(out) => return Some(out),
+                        Err(CompactFailure::Cancelled) => return None,
+                        Err(e) => tracing::warn!(
+                            error = ?e,
+                            compaction_model = %sampling.config.model,
+                            "two_pass: pinned compaction model failed; retrying with the session model"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    compaction_model = %sampling.config.model,
+                    "two_pass: pinned compaction client failed to build; using the session model"
+                ),
+            }
+            history = retry_history;
+        }
+        let client = match self.prepare_chat_completion(false).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "two_pass: failed to prepare sampling client");
+                return None;
+            }
+        };
+        let sampling_config = sampling.session_fallback.unwrap_or(sampling.config);
+        match self
+            .two_pass_sample_once(
+                history,
+                &sampling_config,
+                client,
+                tools,
+                hosted_tools,
+                compaction_tool_tokens,
+                wall_clock_budget_secs,
+                &cancel,
+            )
+            .await
         {
             Ok(out) => Some(out),
             Err(e) => {
@@ -1067,8 +1246,30 @@ impl SessionActor {
                 "{COMPACTION_FAILED_GUARD_PREFIX}no system message in simplified conversation"
             )));
         }
-        let sampling_config = self.reconstruct_full_config().await;
-        let sampling_client = self.prepare_chat_completion(false).await?;
+        // FORK PATCH 13: the pinned `[compaction] model`'s own config and transport, or the session's.
+        // A pinned client that cannot even be built drops the pin here rather than failing the compact.
+        let mut sampling = self.compaction_sampling_config().await;
+        let mut pinned_client = None;
+        if sampling.is_pinned() {
+            match xai_grok_sampler::SamplingClient::new(sampling.config.clone()) {
+                Ok(client) => pinned_client = Some(client),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        compaction_model = %sampling.config.model,
+                        "pinned compaction client failed to build; compacting with the session model"
+                    );
+                    if let Some(session_config) = sampling.session_fallback.take() {
+                        sampling.config = session_config;
+                    }
+                }
+            }
+        }
+        let sampling_client = match pinned_client {
+            Some(client) => client,
+            None => self.prepare_chat_completion(false).await?,
+        };
+        let mut sampling_config = sampling.config.clone();
         let backend_search_active = self.backend_search_active();
         let effective_tool_defs: Vec<xai_grok_sampling_types::ToolDefinition> = self
             .prepare_tool_definitions()
@@ -1095,7 +1296,11 @@ impl SessionActor {
             tool_tokens = compaction_tool_tokens,
             "Running compact with model '{}' (user model: '{}')",
             &sampling_config.model,
-            &sampling_config.model
+            // FORK PATCH 13: with a pin these differ — the second is the model the user is chatting with.
+            sampling
+                .session_fallback
+                .as_ref()
+                .map_or(sampling_config.model.as_str(), |cfg| cfg.model.as_str())
         );
         let mut last_error: Option<acp::Error> = None;
         let mut last_failure_outcome = CompactionOutcome::Failed;
@@ -1121,20 +1326,21 @@ impl SessionActor {
             .borrow()
             .compaction_policy()
             .wall_clock_budget_secs;
-        let sampler = crate::session::helpers::full_replace_compaction::ShellCompactionSampler::new(
-            use_short_prompt,
-            user_context.clone(),
-            compaction_tools.clone(),
-            compaction_hosted_tools.clone(),
-            compaction_tool_tokens,
-            sampling_client,
-            self.session_info.id.clone(),
-            sampling_config.clone(),
-            self.inference_idle_timeout,
-            wall_clock_budget_secs,
-            self.compaction.tool_choice,
-            cancel.clone(),
-        );
+        let mut sampler =
+            crate::session::helpers::full_replace_compaction::ShellCompactionSampler::new(
+                use_short_prompt,
+                user_context.clone(),
+                compaction_tools.clone(),
+                compaction_hosted_tools.clone(),
+                compaction_tool_tokens,
+                sampling_client,
+                self.session_info.id.clone(),
+                sampling_config.clone(),
+                self.inference_idle_timeout,
+                wall_clock_budget_secs,
+                self.compaction.tool_choice,
+                cancel.clone(),
+            );
         let observer =
             crate::session::helpers::full_replace_compaction::ShellFullReplaceObserver::new(
                 trigger,
@@ -1295,6 +1501,66 @@ impl SessionActor {
                     last_error = Some(acp::Error::internal_error().data(message));
                     break;
                 }
+            }
+        }
+        // FORK PATCH 13: a pinned model that is down, unauthorized, or rejecting the payload must not
+        // leave the session unable to compact — an uncompactable session cannot continue at all. One
+        // retry with the session model before the existing failure path (suppression, telemetry, error)
+        // runs. Success takes the normal path below, which clears any AUTO suppression the pinned
+        // attempt set. Cancel is not a failure and is never retried.
+        if compact_summary.is_none()
+            && !cancel.is_cancelled()
+            && let Some(session_config) = sampling.session_fallback.take()
+        {
+            tracing::warn!(
+                session_id = %self.session_info.id.0,
+                compaction_model = %sampling_config.model,
+                session_model = %session_config.model,
+                "pinned compaction model failed; retrying once with the session model"
+            );
+            match self.prepare_chat_completion(false).await {
+                Ok(session_client) => {
+                    let fallback_sampler = crate::session::helpers::full_replace_compaction::ShellCompactionSampler::new(
+                        use_short_prompt,
+                        user_context.clone(),
+                        compaction_tools.clone(),
+                        compaction_hosted_tools.clone(),
+                        compaction_tool_tokens,
+                        session_client,
+                        self.session_info.id.clone(),
+                        session_config.clone(),
+                        self.inference_idle_timeout,
+                        wall_clock_budget_secs,
+                        self.compaction.tool_choice,
+                        cancel.clone(),
+                    );
+                    match xai_grok_compaction::sample_full_replace_summary(
+                        &fallback_sampler,
+                        &request_turns,
+                        user_context.as_deref(),
+                        &fr_config,
+                        &observer,
+                    )
+                    .await
+                    {
+                        Ok(summary) => {
+                            compact_summary = Some(summary.summary);
+                            last_error = None;
+                            // The persisted artifact and `take_last_success` must describe the attempt
+                            // that actually produced the summary.
+                            sampling_config = session_config;
+                            sampler = fallback_sampler;
+                        }
+                        Err(e) => tracing::warn!(
+                            error = ?e,
+                            "compaction retry with the session model also failed"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "could not prepare a session-model client for the compaction retry"
+                ),
             }
         }
         let telemetry = observer.into_telemetry();

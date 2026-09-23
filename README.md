@@ -25,6 +25,17 @@
 >    `thinking` block → prevents `400 Invalid signature` after model switches.
 > 4. **Access gate fails open** — with remote fetches disabled no `allow_access`
 >    verdict can arrive, so stale cached verdicts are never enforced.
+> 5. **Compaction can be pinned to its own model** — `[compaction] model` /
+>    `effort` (or `GROK_COMPACTION_MODEL` / `GROK_COMPACTION_EFFORT`) summarize
+>    with a chosen `[models]` entry instead of the session's model, using that
+>    entry's own endpoint and key. Unset keeps today's behavior; a pinned model
+>    that fails falls back to the session model once.
+>
+>    ```toml
+>    [compaction]
+>    model = "sonnet"   # a [models] entry id
+>    effort = "xhigh"
+>    ```
 >
 > ### Install
 >

@@ -23,11 +23,11 @@ ever appears, rewrite before pushing — do not merge around it.
 
 ## 1. Patch inventory
 
-Fifteen guard sites across thirteen patches (patches 1 and 7 each span two
-files — the shell-side resolver and an in-crate client that has its own
-independent entry points). Each carries a `(... fork patch)` marker comment
-the audit/doctor greps for. If a marker disappears in a merge, the patch is
-gone — re-apply.
+Sixteen sites across fourteen patches (patches 1 and 7 each span two files —
+the shell-side resolver and an in-crate client that has its own independent
+entry points; patches 9 and 13 are features, not guards). Each carries a
+`(... fork patch)` marker comment the audit/doctor greps for. If a marker
+disappears in a merge, the patch is gone — re-apply.
 
 | # | Name | Site (function) | File | Marker |
 |---|------|-----------------|------|--------|
@@ -46,6 +46,7 @@ gone — re-apply.
 | 10 | Auto-update disabled | `run_update_if_available()` + `check_update_background()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
 | 11 | Feedback trace upload disabled | `handle_upload_trace_with_session_dir()` | `crates/codegen/xai-grok-shell/src/extensions/feedback_trace.rs` | `FEEDBACK TRACE UPLOAD HARD-DISABLED` |
 | 12 | Side-call bearer xAI-only | `byok_from_models()` | `crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs` | `BYOK SIDE-CALL BEARER XAI-ONLY` |
+| 13 | Compaction model+effort pinning (feature) | `SessionActor::compaction_sampling_config()` + `resolve_compaction_model()`/`resolve_compaction_effort()` | `.../src/util/config/resolve/compaction.rs`, `.../src/session/compaction.rs`, `.../src/agent/config.rs`, `.../src/session/helpers/session_compact.rs` | `FORK PATCH 13` |
 
 Patch 1 is the keystone: Mixpanel, product events, the internal OTLP span
 pipeline, session metrics, and the trace-upload default all gate on it.
@@ -306,6 +307,47 @@ own provider are unaffected. Entries with xAI endpoints keep working —
 voice/imagine. On syncs: the function is small; re-apply by re-wrapping each
 `own_credential()` tier, and keep the audit's behavioral check (the body
 must reference `is_trusted_xai_https_url`) as the arbiter.
+
+### Patch 13 — compaction model+effort pinning (feature, not a guard)
+
+Upstream compacts with whatever the session is sampling with. The fork adds
+`[compaction] model` / `[compaction] effort` (env `GROK_COMPACTION_MODEL` /
+`GROK_COMPACTION_EFFORT`, env > TOML) so the summarization call — the one call
+whose output the rest of the session is built on — can be pinned to a chosen
+`[models]` entry: chat with a cheap coding model, compact with Sonnet at
+xhigh. Four pieces, all marked `FORK PATCH 13`:
+
+1. `util/config/resolve/compaction.rs` — `resolve_compaction_model()` /
+   `resolve_compaction_effort()` (`Resolved<T>`/`ConfigSource`; the TOML tier
+   is read **overlay-free**, like `[auto_mode]`, so a `GROK_CONFIG` overlay
+   cannot re-route the transcript). The keys are declared on
+   `agent/config.rs::CompactionConfig`; `effort` stays a raw `String` there so
+   a typo degrades instead of failing the whole config parse.
+2. `agent/config.rs` — `compaction_sampling_config_for()` resolves the id
+   through `resolve_credentials` + `sampling_config_for_model`, exactly like a
+   model switch, so the entry's own key only ever reaches its own `base_url`
+   (patch 12's rule). Deliberately **no** xAI-proxy fallback tier like
+   `resolve_aux_model_sampling_config` has: an unresolvable pin returns `None`
+   and compaction stays on the session model.
+3. `session/compaction.rs` — `SessionActor::compaction_sampling_config()`, the
+   single helper both call sites (`two_pass_sample`, `run_compact_inner`) use,
+   plus the one-shot retry with the session config when the pinned endpoint
+   fails. Unpinned it returns `reconstruct_full_config()` unchanged.
+4. `session/helpers/session_compact.rs` — all three request shapes now carry
+   `sampling_config.reasoning_effort`. Upstream builds them without it, so the
+   pinned effort (and an entry's own catalog effort) would otherwise resolve
+   correctly and never reach the wire.
+
+On syncs: this is a feature, so upstream will never conflict "against" it —
+the risk is silent loss. A merge that takes upstream's `two_pass_sample` /
+`run_compact_inner` hunks re-instates `reconstruct_full_config()` at the call
+sites and the pin stops working with no error anywhere; a merge that takes
+upstream's `session_compact.rs` request builders drops the effort from the
+wire while the config still resolves, which looks like "xhigh does nothing".
+`make doctor`'s line 13 only proves the resolver marker survived — check all
+four sites, and let
+`cargo test -p xai-grok-shell --lib -- session::acp_session::compaction util::config::resolve::compaction`
+(both in `make test`) be the arbiter.
 
 ---
 
