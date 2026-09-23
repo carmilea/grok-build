@@ -912,6 +912,17 @@ pub struct FeedbackUserConfig {
 pub struct CompactionConfig {
     pub memory_flush: Option<crate::config::MemoryFlushSettings>,
     pub pruning: Option<crate::config::PruningSettings>,
+    /// FORK PATCH 13 (compaction model+effort pinning): `[compaction] model`, a `[models]` catalog id
+    /// the summarization call is pinned to. Env `GROK_COMPACTION_MODEL` wins; unset keeps the session model.
+    /// Resolved by [`crate::util::config::resolve_compaction_model`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// FORK PATCH 13: `[compaction] effort`, a reasoning-effort token (`low`/`high`/`xhigh`/...) for the
+    /// pinned model. Kept as a raw string so a typo degrades to the model's own effort instead of failing
+    /// the whole config parse. Env `GROK_COMPACTION_EFFORT` wins; resolved by
+    /// [`crate::util::config::resolve_compaction_effort`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -4970,6 +4981,80 @@ pub(crate) fn resolve_aux_model_sampling_config(
         "no credentials for auxiliary model; falling back to active model",
     );
     None
+}
+// FORK PATCH 13 (compaction model+effort pinning).
+//
+// The catalog half of the pin: turn the `[compaction] model` id into the `SamplerConfig` the
+// summarization call runs on. Routed through `resolve_credentials` + `sampling_config_for_model`
+// exactly like a model switch, so the entry's own key reaches only its own `base_url` and
+// `api_backend` (patch 12's rule: a Moonshot key must never be offered to Anthropic, or the
+// reverse). There is deliberately NO xAI-proxy fallback tier like `resolve_aux_model_sampling_config`
+// has — an unresolvable pin returns `None` and the caller compacts with the session model rather
+// than send this conversation somewhere the pin never named.
+//
+// Reverting this drops the pin's routing: compaction goes back to the session's model, endpoint and
+// effort, silently.
+/// The reasoning effort to ask the pinned compaction model for.
+/// An entry that declares a `reasoning_efforts` menu is authoritative: a requested effort it does not
+/// offer is warned and replaced by its default option (`default: true`, else the first), mirroring
+/// [`ModelInfo::derive_reasoning_effort_fields`]. An entry with no menu takes the request as-is.
+/// `None` means "keep whatever the entry itself configured".
+pub(crate) fn compaction_effort_for_entry(
+    info: &ModelInfo,
+    requested: ReasoningEffort,
+) -> Option<ReasoningEffort> {
+    if info.reasoning_efforts.is_empty()
+        || info
+            .reasoning_efforts
+            .iter()
+            .any(|option| option.value == requested)
+    {
+        return Some(requested);
+    }
+    let fallback = info
+        .reasoning_efforts
+        .iter()
+        .find(|option| option.default)
+        .or_else(|| info.reasoning_efforts.first())
+        .map(|option| option.value);
+    tracing::warn!(
+        model = %info.model,
+        requested = %requested,
+        fallback = ?fallback,
+        "compaction effort is not offered by the pinned model; using the model's default effort"
+    );
+    fallback
+}
+/// FORK PATCH 13: resolve the pinned `[compaction] model` id against the catalog into its own sampler config.
+/// `None` when the id is absent from the catalog; the caller warns and compacts with the session config.
+/// `requested_effort` is the resolved `[compaction] effort`, validated against the entry's menu; a model with
+/// per-effort ids (`variants`) routes to the id it sends at the effort actually used.
+pub(crate) fn compaction_sampling_config_for(
+    model_id: &str,
+    requested_effort: Option<ReasoningEffort>,
+    models: &IndexMap<String, ModelEntry>,
+    session_key: Option<&str>,
+    disable_api_key_auth: bool,
+    alpha_test_key: Option<String>,
+    client_version: Option<String>,
+) -> Option<SamplerConfig> {
+    let entry = find_model_by_id(models, model_id)?;
+    let credentials = resolve_credentials_enforced(entry, session_key, disable_api_key_auth);
+    let mut sampler = sampling_config_for_model(
+        entry,
+        credentials,
+        alpha_test_key,
+        client_version,
+        None,
+        None,
+    );
+    if let Some(requested) = requested_effort
+        && let Some(effort) = compaction_effort_for_entry(entry.info(), requested)
+    {
+        sampler.reasoning_effort = Some(effort);
+        sampler.model = entry.info().model_at(effort).to_owned();
+    }
+    Some(sampler)
 }
 /// Stamp the session-local identity, attribution, bearer resolver, and retries from the active session onto a routed aux `SamplerConfig`. A helper model then keeps the session's auth/attribution.
 /// Shared by image-describe and the auto-mode classifier so the two can't drift. The resolver gate is host-based, stricter than `session_token_auth_gate`.
