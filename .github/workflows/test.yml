@@ -19,6 +19,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Hard rule (PATCH.MD): every commit and PR lists only the owner's account.
+  authorship:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit lists only the owner
+        shell: bash
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          echo "checking authors since $base"
+          bad=0
+          while IFS= read -r line; do
+            case "$line" in
+              "Cindy Parkar|cynn.ayres@gmail.com"|"Cindy|38557922+carmilea@users.noreply.github.com") ;;
+              *) echo "FOREIGN AUTHOR: $line"; bad=1 ;;
+            esac
+          done < <(git log --format='%an|%ae' "${base}..HEAD" | sort -u)
+          if git log --format='%B' "${base}..HEAD" | grep -qi '^Co-authored-by:'; then
+            echo "Co-authored-by trailer found (not allowed)"; bad=1
+          fi
+          [ $bad -eq 0 ] && echo "all commits authored by the owner"
+          exit $bad
+
   gate:
     runs-on: ubuntu-latest
     steps:

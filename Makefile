@@ -221,6 +221,7 @@ doctor: ## Verify remotes, PAT, install symlink, and fork patch guards are prese
 	@echo "== remotes =="; git remote -v | sort -u
 	@echo "== gh (GitHub PR flow) =="; gh auth status >/dev/null 2>&1 && echo "gh authenticated" || echo "gh NOT authenticated (run: gh auth login)"
 	@echo "== local.mk =="; test -r local.mk && echo "present (private overrides loaded)" || echo "absent (optional; private overrides go here)"
+	@echo "== git identity (must be the owner) =="; test "$$(git config user.name)" = "Cindy Parkar" && test "$$(git config user.email)" = "cynn.ayres@gmail.com" && echo "OK: Cindy Parkar <cynn.ayres@gmail.com>" || echo "MISMATCH: $$(git config user.name) <$$(git config user.email)>"
 	@echo "== install link =="; ls -la $(INSTALL_LINK) 2>/dev/null || echo "missing (run: make install)"
 	@echo "== fork patch guards =="
 	@grep -q "TELEMETRY HARD-DISABLED" crates/codegen/xai-grok-shell/src/agent/config.rs && echo "1. telemetry disable      OK" || echo "1. telemetry disable      MISSING!"

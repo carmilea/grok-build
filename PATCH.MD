@@ -8,6 +8,17 @@ and the egress-path inventory live in `SECURITY-EGRESS.md`; this file is the
 Golden rule: **never merge with a red `make audit`.** The audit is behavioral —
 it checks that guards gate, not that comments exist.
 
+Authorship rule: **the only author on this repo is the owner.** Everything
+pushed — commits, merges, tags — and every PR opened lists only `carmilea`
+(`Cindy Parkar <cynn.ayres@gmail.com>`, or GitHub's web-merge identity
+`38557922+carmilea@users.noreply.github.com`). No bot, agent, upstream, or
+co-author identities, ever. History carries no upstream commits at all
+(orphan model, §3). Agents working in this repo commit under the repo's git
+config identity and never add `Co-authored-by` trailers. The CI `authorship`
+job (`.github/workflows/test.yml`) rejects pushes and PRs carrying any other
+author; `make doctor` checks the local git identity. If a foreign identity
+ever appears, rewrite before pushing — do not merge around it.
+
 ---
 
 ## 1. Patch inventory

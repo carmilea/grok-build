@@ -41,3 +41,14 @@ This project is indexed by GitNexus as **grok-build** (99700 symbols, 241016 rel
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Authorship (hard rule)
+
+Everything pushed to this repo — commits, merges, tags — and every PR opened
+lists ONLY the owner's account: `carmilea` (`Cindy Parkar
+<cynn.ayres@gmail.com>`). When committing here: use the repo's existing git
+config identity (never set a different `user.name`/`user.email`), never add
+`Co-authored-by` trailers, and open PRs with `gh` under the owner's account.
+CI rejects pushes and PRs carrying any other author (the `authorship` job in
+`.github/workflows/test.yml`). History intentionally carries no upstream
+commits or upstream authorship (orphan model — see PATCH.MD §3).
