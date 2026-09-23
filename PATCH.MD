@@ -331,11 +331,24 @@ for a gap that size. Falling behind on the weekly cadence is what turns a
 ```sh
 git checkout main && git checkout -b upstream-sync-<VERSION>
 git fetch upstream
-git merge upstream/main --no-edit      # expect conflicts at guard sites
+git merge upstream/main --no-edit --allow-unrelated-histories
 ```
 
+> **History model (since 1.0.38):** `main` is a single orphan commit — the
+> fork deliberately carries **no upstream history** (no upstream commit
+> hashes, no upstream bot authorship). Every sync therefore merges with
+> `--allow-unrelated-histories`, which has no merge-base: **every file the
+> fork has ever touched conflicts add/add**, not just the guard sites
+> upstream changed. The §1 table and the §2 recipes are the resolution
+> checklist; the behavioral audit is the arbiter. After the sync is verified
+> (step 5), **re-squash back to a single orphan commit** (step 8) before
+> pushing — this drops the upstream commits the merge pulled in, along with
+> their authorship.
+
 1. **Resolve conflicts.** Guard sites conflict because the fork patched them;
-   resolve by taking upstream's structure, then apply the §2 recipes.
+   resolve by taking upstream's structure, then apply the §2 recipes. With no
+   merge-base, conflicts are bulkier: sort by the §1 table first, then sweep
+   the remaining conflicted files (usually fork-side docs/tooling).
 2. **Check auto-merged guard files too.** Auto-merge can silently hybridize a
    patched function when upstream edits nearby lines. Eyeball every site in
    the §1 table, not just the conflicted files.
@@ -357,14 +370,26 @@ git merge upstream/main --no-edit      # expect conflicts at guard sites
    upstream. (A legacy internal PR flow, if any, belongs in a gitignored
    `local.mk` — the Makefile includes it; keep internal hosts out of the
    public repo.)
-7. **Tag the fork release** to fire the GitHub Actions release build
+7. **Re-squash to a single orphan commit.** The sync merge pulled upstream's
+   commits (and their authorship) back into history — the fork's history
+   model is one orphan commit, so after the merge lands on main:
+   ```sh
+   git checkout main && git pull --ff-only
+   git checkout --orphan re-squash main
+   git commit -m "Privacy-hardened fork of xai-org/grok-build @ <VERSION>"
+   git branch -f main re-squash && git checkout main && git branch -D re-squash
+   git push origin --force main
+   ```
+   The tree is unchanged (verify: `git diff <pre-squash-main> HEAD` is empty).
+   This is also why the fork carries no upstream contributor authorship.
+8. **Tag the fork release** to fire the GitHub Actions release build
    (`.github/workflows/release.yml`): bump the 4th component —
    `git tag -a fork-<UPSTREAM>.<N>` (e.g. `fork-1.0.38.1`) — and push it to
    origin (your GitHub fork). The binary always mirrors the crate version with
    a `-s` suffix (`1.0.38-s`); the `fork-*` tag is the release trigger and
    the iteration counter when more than one fork release rides on the same
    upstream version.
-8. **Rebuild the installed CLI** so the running binary matches the merged
+9. **Rebuild the installed CLI** so the running binary matches the merged
    tree: `make install`, then confirm `grok --version` prints the new
    fork-branded version + merge commit hash.
 
