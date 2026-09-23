@@ -45,13 +45,13 @@
 >   dropped from Anthropic-bound requests instead of replaying as invalid
 >   signatures (3).
 >
-> **Fork features (added, not just disabled):**
+> ## 🚀 Fork features (added, not just disabled):
 >
-> - **`web_search` for Moonshot and Anthropic** (patch 9) — upstream speaks
+> - 💻 **`web_search` for Moonshot and Anthropic** (patch 9) — upstream speaks
 >   only xAI's Responses API; the fork adds Moonshot's `$web_search` builtin
 >   and Anthropic's `web_search_20250305` server tool (x-api-key auth,
 >   domain filters native), dispatched per `[models]` entry's `api_backend`.
-> - **Compaction model pinning** (patch 13) — `[compaction] model` / `effort`
+> - 🤖 **Compaction model pinning** (patch 13) — `[compaction] model` / `effort`
 >   (or `GROK_COMPACTION_MODEL` / `GROK_COMPACTION_EFFORT`) summarize with a
 >   chosen `[models]` entry and its own endpoint/key; unset keeps the session
 >   model, and a failed pin retries once on the session model.
@@ -62,7 +62,7 @@
 >   effort = "xhigh"
 >   ```
 >
-> - **`/api-model-update`** (patch 14) — refresh BYOK `[model.*]` entries
+> - 🛜 **`/api-model-update`** (patch 14) — refresh BYOK `[model.*]` entries
 >   from each provider's live model list: new Kimi/Opus releases become
 >   usable, retired ones trimmed. Dry-run by default; `apply` writes
 >   (backing up `config.toml` first); a provider that errors is never
