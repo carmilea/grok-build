@@ -400,9 +400,12 @@ git merge upstream/main --no-edit --allow-unrelated-histories
    a `-s` suffix (`1.0.38-s`); the `fork-*` tag is the release trigger and
    the iteration counter when more than one fork release rides on the same
    upstream version.
-9. **Rebuild the installed CLI** so the running binary matches the merged
-   tree: `make install`, then confirm `grok --version` prints the new
-   fork-branded version + merge commit hash.
+9. **Update the installed CLI.** The daily driver is the Homebrew tap
+   (primary): once the release publishes, `brew update && brew upgrade
+   carmilea/grok/grok`, then confirm `grok --version` prints the new
+   fork-branded version. For a repo-checkout dev build instead, `make
+   install` relinks `~/.local/bin/grok-bin` (secondary; the old passthrough
+   wrapper is retired at `~/.local/bin/grok.fork-build-wrapper.bak`).
 
 ---
 

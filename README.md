@@ -40,7 +40,8 @@
 >
 > ```sh
 > make doctor     # verify remotes, gh auth, install link, and all patch guards
-> make build      # release build; updates installed `grok` via symlink
+> make build      # release build of the repo checkout (dev)
+> brew install carmilea/grok/grok   # daily driver (primary)
 > make test       # fast gate: every crate the patches touch
 > make sync       # fetch + merge upstream (then re-check the patches, PATCH.MD §1)
 > make pr / merge-pr   # GitHub PR flow via gh (origin = this fork); private
