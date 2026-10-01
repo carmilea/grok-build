@@ -250,8 +250,11 @@ jobs:
       - name: Commit and push if changed
         working-directory: tap
         run: |
-          git config user.name "grok-build-release-bot"
-          git config user.email "actions@users.noreply.github.com"
+          # Owner-only authorship (PATCH.MD hard rule): the bot never
+          # appears as a contributor. Use the GitHub noreply address so
+          # commits attribute to the owner's account.
+          git config user.name "Cindy"
+          git config user.email "38557922+carmilea@users.noreply.github.com"
           if git diff --quiet; then
             echo "formula already up to date; nothing to push"
             exit 0
