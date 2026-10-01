@@ -55,7 +55,9 @@ if [ -z "$version" ]; then
 fi
 [ -n "$version" ] || err "could not resolve latest release tag for $REPO"
 
-fork_version="$(echo "$version" | sed -E 's/^fork-//')-s"
+# Tag is fork-<X.Y.Z>.<N>; the .N rebuild counter never appears in asset
+# names, which carry only the crate version (X.Y.Z-s, per release.yml).
+fork_version="$(echo "$version" | sed -E 's/^fork-([0-9]+\.[0-9]+\.[0-9]+).*/\1/')-s"
 asset="grok-${fork_version}-${asset_os}.tar.gz"
 url="https://github.com/$REPO/releases/download/$version/$asset"
 
