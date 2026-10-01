@@ -79,6 +79,61 @@
 > Or grab a `.tar.gz` (Linux/macOS), `.deb`, or `.rpm` directly from this
 > repo's [Releases](https://github.com/carmilea/grok-build/releases) page.
 >
+> ### Run on your own API keys (no x.ai account)
+>
+> The fork's main use case: bring your own keys and never talk to x.ai. Add
+> `[model.<id>]` entries to `~/.grok/config.toml` and point `[models]`'s
+> `default` at one. No `grok login`, no `XAI_API_KEY` — a model with its own
+> `api_key`/`env_key` authenticates itself.
+>
+> OpenAI-compatible providers (Moonshot, OpenRouter, DeepSeek, OpenAI,
+> local servers) are the default protocol — just `base_url` + key:
+>
+> ```toml
+> [model.kimi]
+> model = "kimi-k3"
+> base_url = "https://api.moonshot.ai/v1"
+> api_key = "sk-..."                       # or env_key = "MOONSHOT_API_KEY"
+> context_window = 1048576
+>
+> [models]
+> default = "kimi"
+> ```
+>
+> Anthropic Claude goes through the Messages API, which is a different
+> protocol and a different header:
+>
+> ```toml
+> [model.claude-sonnet-5]
+> model = "claude-sonnet-5"
+> base_url = "https://api.anthropic.com/v1"
+> api_backend = "messages"                 # Anthropic Messages protocol
+> auth_scheme = "x_api_key"                # x-api-key header, not Bearer
+> api_key = "sk-ant-..."
+> context_window = 200000
+> extra_headers = { "anthropic-version" = "2023-06-01" }
+> ```
+>
+> *Three fields are load-bearing for Claude*: omit `api_backend` and grok
+> speaks Chat Completions to Anthropic's compatibility endpoint, which
+> 400s on tool schemas (`oneOf` at the schema root). The `messages`
+> backend also automatically hides the one tool whose schema Anthropic
+> rejects.
+>
+> Keys in `env_key` instead of on disk: a string or array of variable names
+> (first set, non-empty wins), e.g. `env_key = ["ANTHROPIC_AUTH_TOKEN",
+> "LC_ANTHROPIC_AUTH_TOKEN"]` for SSH `LC_*` forwarding. Query-string
+> versioning: `query_params = { api-version = "..." }`. Secrets never belong
+> in `query_params` (they ride the URL and land in the session file) — use
+> `env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }`, resolved at request
+> time and never written to disk.
+>
+> Extras once keys work: `/api-model-update` (patch 14) refreshes entries
+> from each provider's live model list; `[compaction]` (patch 13) pins the
+> compaction model; `Ctrl+M` or `/model` switches between configured
+> models. Full reference for every `[model.*]` field: upstream's
+> [custom models doc](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md).
+>
 > ### Working on this fork
 >
 > ```sh
