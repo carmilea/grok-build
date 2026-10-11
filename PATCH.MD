@@ -668,6 +668,23 @@ When a patch is added, removed, or re-homed, update in the **same commit**:
 - `scripts/egress-baseline.txt` and `scripts/egress-baseline-nonhttp.txt` —
   via `make audit-baseline` (regenerates both), with justification
 
+### The force-push hazard
+
+The orphan model (§3 step 7) rewrites `main` on every sync, so a fix that
+lands between syncs and is not carried into the re-squashed tree **disappears
+without a trace** — no revert commit, no conflict, nothing to grep for. This
+already happened once: "release: attribute tap commits to the owner, not a
+bot" ran CI against `main` on 2026-10-01, is absent from `main`'s ancestry,
+and the Homebrew tap commit for `fork-1.0.45.1` duly regressed to a bot
+identity in violation of the authorship rule.
+
+Before re-squashing, diff the tree against the *pre-squash* `main`, not just
+against the sync branch — `git diff <pre-squash-main> HEAD` must be empty
+(§3 step 7 already says this; the point is that it is load-bearing, not a
+formality). Files with no test coverage and no audit check are the ones that
+vanish quietly: `.github/workflows/release.yml`, `install.sh`,
+`packaging/nfpm.yaml`, `local.mk`.
+
 ---
 
 ## 6. Field notes

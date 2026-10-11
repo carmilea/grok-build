@@ -250,8 +250,14 @@ jobs:
       - name: Commit and push if changed
         working-directory: tap
         run: |
-          git config user.name "grok-build-release-bot"
-          git config user.email "actions@users.noreply.github.com"
+          # Authorship hard rule (PATCH.md, AGENTS.md): every commit this repo
+          # produces — including tap commits — lists only the owner. A bot
+          # identity here is what the `authorship` job in test.yml rejects.
+          # This was fixed once before and silently lost when a later
+          # force-push of main rewrote history without it; the tap commit for
+          # fork-1.0.45.1 regressed to the bot as a result.
+          git config user.name "Cindy Parkar"
+          git config user.email "cynn.ayres@gmail.com"
           if git diff --quiet; then
             echo "formula already up to date; nothing to push"
             exit 0
