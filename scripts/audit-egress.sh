@@ -252,6 +252,28 @@ else
   note "the refusal must precede get_installer() and the flag must be literally true; see PATCH.md patch 10"
 fi
 
+# Patch 10c: `grok update --check` must resolve against THIS fork's releases,
+# not upstream's channels (npm registry / GCS channel pointer / xai-org
+# GitHub). Note that neither census can see this: both censuses match write
+# verbs, and an update check is a GET, so a regression here would be silent.
+check_status_head=$(awk '/^pub async fn check_update_status\(/{f=1} f{print} f&&/^}/{exit}' "$AU" \
+  | sed -n '1,/^    }$/p')
+if printf '%s' "$check_status_head" | grep -qE 'let +fork_update_check *= *true *;' \
+  && printf '%s' "$check_status_head" | grep -q 'fork_latest_release_tag()' \
+  && ! printf '%s' "$check_status_head" | grep -q 'get_latest_version('; then
+  ok "update --check resolves against the fork's releases, not upstream channels"
+else
+  bad "check_update_status() can reach upstream's release channels again"
+  note "the fork lookup must precede get_latest_version() and the flag must be literally true"
+fi
+
+# The fork's own release endpoint must stay this repo's GitHub releases.
+if grep -q 'https://api.github.com/repos/carmilea/grok-build/releases/latest' "$AU"; then
+  ok "fork release check points at carmilea/grok-build"
+else
+  bad "the fork release endpoint changed"
+fi
+
 # Closed-set guard for the whole class: every update entry point the CLI can
 # reach must be one of the patched ones. A new name here means upstream added
 # another door and the fork has not patched it.

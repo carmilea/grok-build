@@ -425,6 +425,29 @@ Four of the six crates upstream added in 1.0.45 add no egress path of their own:
   (`apply_import()` runs from the pager's import modal, never at startup), and
   only into names that do not already exist. Same trust boundary as §2.9.
 
+### 2.16 Fork release check — `grok update --check` (patch 10c)
+
+The only outbound request this fork **adds** rather than removes, and it is a
+net reduction in exposure: it replaces the upstream release-channel lookup
+with one to this repo's own releases.
+
+| | |
+|---|---|
+| Path | `GET https://api.github.com/repos/carmilea/grok-build/releases/latest` |
+| Site | `auto_update.rs` → `fork_latest_release_tag()`, reached only from `check_update_status()` |
+| Trigger | `grok update --check` only — explicit, user-initiated, never on a timer or at startup (patch 10 kills the background check) |
+| Sends | Nothing but the request itself: no auth, no version, no identifiers. A default `reqwest` client with a `grok-build-fork/<ver>` user agent and a 10s timeout |
+| Replaces | `get_latest_version()` against the npm registry, the GCS channel pointer, or xai-org's GitHub — i.e. this removes the last routine contact with upstream infrastructure from the update path |
+| Same endpoint as | `install.sh`, which already resolves the latest release this way |
+
+**Census blind spot — read this before trusting a green audit.** Checks 5 and
+6 match write verbs (`.post(`/`.put(`/`.patch(`) and socket transports. An
+update check is a plain `GET`, so **neither census moved when this call was
+added**, and neither would move if someone repointed it at upstream. The two
+behavioral checks in §1 (the fork lookup must precede `get_latest_version()`,
+and the endpoint must still name `carmilea/grok-build`) are the only
+protection here. Both were confirmed to go red when disarmed.
+
 ### 2.15 Census entries accepted in the 1.0.45 sync
 
 Every file the two censuses gained in the 1.0.45 baseline update, and why each

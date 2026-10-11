@@ -46,6 +46,7 @@ disappears in a merge, the patch is gone — re-apply.
 | 9 | Web-search backends (feature) | `WebSearchClient` dispatch + `spawn.rs` mapping | `xai-grok-tools/.../web_search/{types,client}.rs`, `.../acp_session_impl/spawn.rs` | `FORK PATCH 9` |
 | 10 | Auto-update disabled | `run_update_if_available()` + `check_update_background()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
 | 10b | `grok update` subcommand refuses | `run_update()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
+| 10c | `update --check` reads fork releases | `check_update_status()` + `print_update_status()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
 | 11 | Feedback trace upload disabled | `handle_upload_trace_with_session_dir()` | `crates/codegen/xai-grok-shell/src/extensions/feedback_trace.rs` | `FEEDBACK TRACE UPLOAD HARD-DISABLED` |
 | 12 | Side-call bearer xAI-only | `byok_from_models()` | `crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs` | `BYOK SIDE-CALL BEARER XAI-ONLY` |
 | 13 | Compaction model+effort pinning (feature) | `SessionActor::compaction_sampling_config()` + `resolve_compaction_model()`/`resolve_compaction_effort()` | `.../src/util/config/resolve/compaction.rs`, `.../src/session/compaction.rs`, `.../src/agent/config.rs`, `.../src/session/helpers/session_compact.rs` | `FORK PATCH 13` |
@@ -330,6 +331,35 @@ literally `true` (a marker-only check passes when someone flips it to
 and one asserts the update entry points have no caller outside the reviewed
 CLI dispatch, so a third door added upstream fails the audit instead of
 shipping.
+
+**Patch 10c — `grok update --check`.** With 10b in place the command still
+asked UPSTREAM where the newest build was (`get_latest_version()` → npm
+registry, the GCS channel pointer, or xai-org's GitHub) and reported it as
+this binary's upgrade target: `1.0.45-s -> 1.0.50`. Two problems: a
+phone-home to upstream infrastructure, and telling fork users they are out
+of date against a stock version number they must not install.
+
+`check_update_status()` now resolves the newest **fork** release from
+`https://api.github.com/repos/carmilea/grok-build/releases/latest` — the
+endpoint `install.sh` already uses — behind the same `let … = true;` idiom,
+and `print_update_status()` grows a `channel == "fork"` branch that always
+names this repo's releases page and the `brew` upgrade command (since 10b
+means `grok update` is not a way to act on the news). The `UpdateStatus`
+shape is unchanged so `--check --json` consumers keep working; `channel`
+reads `fork`.
+
+Net egress: this **replaces** contact with upstream's channels with a GET to
+this repo's GitHub releases. It reaches no xAI infrastructure. Note that
+**neither census can see it** — checks 5 and 6 match write verbs and socket
+transports, and an update check is a plain GET — so the two audit checks
+(fork lookup precedes `get_latest_version()`, endpoint still names
+`carmilea/grok-build`) are the only thing standing between a silent
+regression and shipping. Both were verified by disarming them.
+
+Known limitation, stated rather than papered over: the binary version
+(`X.Y.Z-s`) does not carry the fork iteration counter, so `fork-1.0.45.1`
+and `fork-1.0.45.3` compare equal. The latest tag is therefore always
+printed for comparison against `grok --version`.
 
 ### Patch 11 — feedback trace upload disabled (extensions/feedback_trace.rs)
 

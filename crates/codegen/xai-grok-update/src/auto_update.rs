@@ -190,6 +190,30 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
         return Ok(());
     }
 
+    // AUTO-UPDATE HARD-DISABLED (local fork patch 10c) — fork-facing output.
+    // Always name this fork's releases page and upgrade command: `grok update`
+    // refuses (patch 10b), so a bare "a new version is available" would leave
+    // the user with no supported way to act on it.
+    if status.channel == "fork" {
+        println!("Grok Build (carmilea fork) - v{}", status.current_version);
+        match status.latest_version.as_deref() {
+            Some(tag) if status.update_available => {
+                println!("A newer fork release is available: {tag}");
+            }
+            Some(tag) => {
+                println!("Latest fork release: {tag}");
+                println!(
+                    "(the fork iteration counter is not carried in the binary version — \
+                     compare the tag above with `grok --version`)"
+                );
+            }
+            None => {}
+        }
+        println!("Upgrade:  brew update && brew upgrade carmilea/grok/grok");
+        println!("Releases: {FORK_RELEASES_URL}");
+        return Ok(());
+    }
+
     let channel_label = format!(" [{}]", status.channel);
 
     if status.update_available {
@@ -225,11 +249,100 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
     Ok(())
 }
 
+/// This fork's releases, not upstream's. Tags are `fork-X.Y.Z.N`; the binary
+/// they ship reports `X.Y.Z-s`.
+pub const FORK_RELEASES_URL: &str = "https://github.com/carmilea/grok-build/releases";
+const FORK_RELEASES_API: &str = "https://api.github.com/repos/carmilea/grok-build/releases/latest";
+
+/// The newest fork release tag (e.g. `fork-1.0.45.3`), from this repo's own
+/// GitHub releases — the same endpoint `install.sh` resolves against.
+async fn fork_latest_release_tag() -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(concat!("grok-build-fork/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let body = client
+        .get(FORK_RELEASES_API)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let tag = serde_json::from_str::<serde_json::Value>(&body)?
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("no tag_name in the latest release"))?;
+    Ok(tag)
+}
+
+/// `fork-1.0.45.3` -> `1.0.45-s`, matching what the shipped binary reports.
+/// The fourth component is the fork's iteration counter and is not carried in
+/// the binary version, so two releases off the same upstream base compare
+/// equal here — see the note in [`check_update_status`].
+fn fork_tag_to_binary_version(tag: &str) -> Option<String> {
+    let v = tag.strip_prefix("fork-")?;
+    let mut parts = v.split('.');
+    let (a, b, c) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(format!("{a}.{b}.{c}-s"))
+}
+
 pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
+    // AUTO-UPDATE HARD-DISABLED (local fork patch 10c).
+    //
+    // `grok update --check` resolved the newest build from UPSTREAM's release
+    // channels (npm registry, the GCS channel pointer, or xai-org's GitHub)
+    // and reported it as this binary's upgrade target: "1.0.45-s -> 1.0.50".
+    // That is both a phone-home to upstream infrastructure and a nudge toward
+    // a stock build carrying none of this fork's patches — the same
+    // misdirection patch 10b closed on the install path. Resolve against this
+    // fork's own GitHub releases instead.
+    //
+    // Egress: this REPLACES contact with upstream's channels with a GET to
+    // api.github.com for this repo's latest release — the endpoint install.sh
+    // already uses. It is user-initiated (`--check` is explicit) and reaches
+    // no xAI infrastructure. See SECURITY-EGRESS.md.
+    //
+    // Limitation, stated rather than papered over: the binary version
+    // (`X.Y.Z-s`) does not carry the fork iteration counter, so two releases
+    // off the same upstream base (fork-1.0.45.1 vs .3) compare equal. The
+    // latest tag is therefore always printed so the user can compare it
+    // against `grok --version`.
+    let _ = update_config;
     let installer = get_installer().await.map(|value| value.to_string());
     let current_version = get_installed_grok_version();
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
+
+    let fork_update_check = true;
+    if fork_update_check {
+        return match fork_latest_release_tag().await {
+            Ok(tag) => {
+                let latest = fork_tag_to_binary_version(&tag);
+                let update_available = latest.as_deref().is_some_and(|l| {
+                    needs_update(&current_version, l, "stable", false).unwrap_or(false)
+                });
+                UpdateStatus {
+                    current_version,
+                    latest_version: Some(tag),
+                    update_available,
+                    installer,
+                    channel: "fork".to_owned(),
+                    auto_update,
+                    error: None,
+                }
+            }
+            Err(e) => UpdateStatus {
+                current_version,
+                latest_version: None,
+                update_available: false,
+                installer,
+                channel: "fork".to_owned(),
+                auto_update,
+                error: Some(format!("could not reach {FORK_RELEASES_URL}: {e}")),
+            },
+        };
+    }
     // The WinGet package ships only stable releases, whatever channel is configured.
     let channel = if installer.as_deref() == Some(WINGET) {
         "stable".to_owned()
