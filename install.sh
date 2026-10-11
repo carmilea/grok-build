@@ -42,21 +42,36 @@ fi
 
 # ---- resolve latest release --------------------------------------------------
 
-if command -v gh >/dev/null 2>&1; then
-  version="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
-else
-  version=""
-fi
+# The tag carries a fourth component — the fork iteration counter, e.g.
+# `fork-1.0.45.1` — but assets mirror the three-component crate version with a
+# `-s` suffix: `grok-1.0.45-s-macos-arm64.tar.gz` (PATCH.md §3 step 8). Deriving
+# the filename by stripping `fork-` alone yielded `grok-1.0.45.1-s-...`, which
+# 404s on every release ever cut. Read the asset name out of the release
+# metadata instead, so a naming change can never silently break the installer.
 
-if [ -z "$version" ]; then
-  command -v curl >/dev/null 2>&1 || err "need 'gh' or 'curl' to resolve the latest release"
-  version="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+release_json=""
+if command -v gh >/dev/null 2>&1; then
+  release_json="$(gh release view --repo "$REPO" --json tagName,assets 2>/dev/null || true)"
 fi
+if [ -z "$release_json" ]; then
+  command -v curl >/dev/null 2>&1 || err "need 'gh' or 'curl' to resolve the latest release"
+  release_json="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" || true)"
+fi
+[ -n "$release_json" ] || err "could not reach the release API for $REPO"
+
+# `tag_name` is the REST shape, `tagName` the gh --json shape.
+version="$(echo "$release_json" \
+  | grep -o '"tag_*[Nn]ame": *"[^"]*"' | head -1 \
+  | sed -E 's/.*: *"([^"]+)"$/\1/' || true)"
 [ -n "$version" ] || err "could not resolve latest release tag for $REPO"
 
-fork_version="$(echo "$version" | sed -E 's/^fork-//')-s"
-asset="grok-${fork_version}-${asset_os}.tar.gz"
+# Strip `fork-` and the optional fourth (iteration) component. Used for the
+# closing message, and to rebuild the asset name if the metadata lookup fails.
+fork_version="$(echo "$version" | sed -E 's/^fork-//; s/^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+$/\1/')-s"
+
+asset="$(echo "$release_json" \
+  | grep -o "\"[A-Za-z0-9._-]*-${asset_os}\.tar\.gz\"" | tr -d '"' | head -1 || true)"
+[ -n "$asset" ] || asset="grok-${fork_version}-${asset_os}.tar.gz"
 url="https://github.com/$REPO/releases/download/$version/$asset"
 
 # ---- download & verify --------------------------------------------------------
