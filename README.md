@@ -76,6 +76,18 @@
 > curl -fsSL https://raw.githubusercontent.com/carmilea/grok-build/main/install.sh | sh
 > ```
 >
+> Upgrade an existing install — `brew update` first, or Homebrew keeps
+> resolving the old formula and reports nothing to do:
+>
+> ```sh
+> brew update && brew upgrade carmilea/grok/grok
+> ```
+>
+> `grok --version` prints `X.Y.Z-s`; the `-s` suffix is how you tell this
+> fork's binary from a stock upstream one. Do not upgrade with `grok update`
+> — patch 10 kills the automatic update paths, and the explicit command
+> fetches a **stock upstream** binary, not this fork.
+>
 > Or grab a `.tar.gz` (Linux/macOS), `.deb`, or `.rpm` directly from this
 > repo's [Releases](https://github.com/carmilea/grok-build/releases) page.
 >
@@ -138,7 +150,12 @@ Protocol (ACP).
 
 ![Grok Build TUI](https://media.x.ai/v1/website/universe-tui-screenshot-6f7a0837.png)
 
-**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)**
+**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)** — that page
+documents and distributes **upstream** `xai-org/grok-build`, not this fork.
+Everything below this line is upstream's own README, kept for reference;
+where it tells you to install or update, see
+[Installing the released binary](#installing-the-released-binary) for this
+fork's equivalent.
 
 This repository contains the Rust source for the `grok` CLI/TUI and its agent
 runtime. It is synced periodically from the SpaceXAI monorepo.
@@ -152,16 +169,43 @@ for the version of the code present in this tree.
 
 ## Installing the released binary
 
-Prebuilt binaries are published for macOS, Linux, and Windows:
+> [!IMPORTANT]
+> **This is the fork. Install from this repo, not from x.ai.**
+>
+> The upstream instructions below are struck through and kept only so you can
+> see exactly what they said and what each one maps to here. Running them
+> installs **stock `xai-org/grok-build`**, which is a different program from
+> this one: telemetry, error reporting, the managed-config sync, and the
+> startup phone-home requests are all live in that build. None of this fork's
+> patches exist in it. See [PATCH.MD](PATCH.MD) for what that means in detail.
+
+| Upstream instruction | Use instead |
+|---|---|
+| ~~`curl -fsSL https://x.ai/cli/install.sh \| bash`~~ | `brew install carmilea/grok/grok` (macOS) or `curl -fsSL https://raw.githubusercontent.com/carmilea/grok-build/main/install.sh \| sh` (macOS/Linux) |
+| ~~`irm https://x.ai/cli/install.ps1 \| iex`~~ | No Windows build is published here. Build from source, or use the Linux tarball under WSL. |
+| ~~[x.ai/build/changelog](https://x.ai/build/changelog)~~ | This repo's [Releases](https://github.com/carmilea/grok-build/releases). Upstream's changelog still describes the upstream features this fork inherits, but says nothing about the fork's patches. |
+
+Install:
 
 ```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
-grok --version
+brew install carmilea/grok/grok                                        # macOS (arm64)
+curl -fsSL https://raw.githubusercontent.com/carmilea/grok-build/main/install.sh | sh
+grok --version                                                         # expect: X.Y.Z-s
 ```
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
+Upgrade:
+
+```sh
+brew update && brew upgrade carmilea/grok/grok
+```
+
+The `-s` suffix on the version is how you tell this fork's binary from a stock
+upstream one. `grok update` is **not** the way to upgrade a Homebrew install:
+the fork disables the automatic update paths (patch 10), and the explicit
+command, if it ran, would fetch a stock upstream binary rather than this one.
+
+Or grab a `.tar.gz` (Linux/macOS), `.deb`, or `.rpm` directly from this repo's
+[Releases](https://github.com/carmilea/grok-build/releases) page.
 
 ## Building from source
 
