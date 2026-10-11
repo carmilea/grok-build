@@ -1,0 +1,27 @@
+# nfpm config for the .deb/.rpm packages built in .github/workflows/release.yml
+# (linux-x86_64 leg only). Invoked as:
+#   VERSION=1.0.38-s nfpm package -f packaging/nfpm.yaml -p deb -t dist/
+#
+# version-field note: nfpm expands env vars in string fields, so "${VERSION}"
+# below is populated from the workflow's already-computed fork version
+# (crate version + "-s", e.g. 1.0.38-s) at package time. This is the
+# documented nfpm behavior and needs no extra rendering step.
+name: grok
+arch: amd64
+platform: linux
+version: "${VERSION}"
+maintainer: carmilea
+description: |
+  Privacy-hardened fork of xai-org/grok-build (telemetry and call-home disabled)
+homepage: https://github.com/carmilea/grok-build
+license: Apache-2.0
+
+contents:
+  - src: dist/grok
+    dst: /usr/bin/grok
+    file_info:
+      mode: 0755
+  - src: LICENSE
+    dst: /usr/share/doc/grok/LICENSE
+  - src: THIRD-PARTY-NOTICES
+    dst: /usr/share/doc/grok/THIRD-PARTY-NOTICES
