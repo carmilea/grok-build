@@ -229,6 +229,43 @@ check "auto-update hard-disabled" \
   crates/codegen/xai-grok-update/src/auto_update.rs \
   'AUTO-UPDATE HARD-DISABLED'
 
+# The marker check above is NOT sufficient, and the 1.0.45 sync proved it: the
+# marker sat in run_update_if_available() and check_update_background() the
+# whole time while upstream promoted run_update() to the CLI's direct entry
+# point, so `grok update` walked past both guards and installed a stock
+# upstream binary over this one. Assert behaviorally that the subcommand's
+# own entry point refuses before it can resolve an installer.
+AU=crates/codegen/xai-grok-update/src/auto_update.rs
+run_update_head=$(awk '/^pub async fn run_update\(/{f=1} f{print} f&&/^}/{exit}' "$AU" \
+  | sed -n '1,/return Ok(None);/p')
+# The guard uses the house `let <flag> = true; if <flag> { return }` idiom
+# (avoids unreachable_code on the preserved original body), so the flag's
+# VALUE must be asserted too — checking only for the marker and the return
+# passes happily when someone flips the flag to false. Verified by disarming
+# the guard and confirming this check goes red.
+if printf '%s' "$run_update_head" | grep -q 'AUTO-UPDATE HARD-DISABLED' \
+  && printf '%s' "$run_update_head" | grep -qE 'let +fork_self_update_disabled *= *true *;' \
+  && ! printf '%s' "$run_update_head" | grep -q 'get_installer()'; then
+  ok "grok update subcommand refuses before resolving an installer"
+else
+  bad "run_update() no longer refuses up front — \`grok update\` can install a stock upstream binary"
+  note "the refusal must precede get_installer() and the flag must be literally true; see PATCH.md patch 10"
+fi
+
+# Closed-set guard for the whole class: every update entry point the CLI can
+# reach must be one of the patched ones. A new name here means upstream added
+# another door and the fork has not patched it.
+UPDATE_ENTRY_ALLOW='xai-grok-pager-bin/src/main.rs'
+update_callers=$(grep -rn --include='*.rs' -E 'auto_update::(run_update|run_update_if_available|check_update_background)\(' crates/ \
+  | grep -v '_tests.rs\|/tests/\|mock' || true)
+update_unexpected=$(printf '%s\n' "$update_callers" | grep -vE "$UPDATE_ENTRY_ALLOW" || true)
+if [ -z "$update_unexpected" ]; then
+  ok "update entry points are called only from the reviewed CLI dispatch"
+else
+  bad "an update entry point gained a caller outside the reviewed set"
+  echo "$update_unexpected" | sed 's/^/        /'
+fi
+
 # Patch 11: `x.ai/feedback/upload-trace` tars the whole session directory and
 # PUTs it to GCS on a one-shot grant token that bypasses both the
 # trace-upload gate and the telemetry hard-disable by design. Its sole

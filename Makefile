@@ -235,6 +235,7 @@ doctor: ## Verify remotes, PAT, install symlink, and fork patch guards are prese
 	@grep -q "SESSION SHARING REMOVED" crates/codegen/xai-grok-shell/src/extensions/share.rs && echo "8. sharing stripped       OK" || echo "8. sharing stripped       MISSING!"
 	@grep -q "FORK PATCH 9" crates/codegen/xai-grok-tools/src/implementations/web_search/types.rs && echo "9. web-search backends    OK" || echo "9. web-search backends    MISSING!"
 	@grep -q "AUTO-UPDATE HARD-DISABLED" crates/codegen/xai-grok-update/src/auto_update.rs && echo "10. auto-update disabled  OK" || echo "10. auto-update disabled  MISSING!"
+	@grep -qE "let +fork_self_update_disabled *= *true *;" crates/codegen/xai-grok-update/src/auto_update.rs && echo "10b. grok update refuses  OK" || echo "10b. grok update refuses  MISSING!"
 	@grep -q "FEEDBACK TRACE UPLOAD HARD-DISABLED" crates/codegen/xai-grok-shell/src/extensions/feedback_trace.rs && echo "11. feedback trace upload OK" || echo "11. feedback trace upload MISSING!"
 	@grep -q "BYOK SIDE-CALL BEARER XAI-ONLY" crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs && echo "12. side-call bearer xai-only OK" || echo "12. side-call bearer xai-only MISSING!"
 	@grep -q "FORK PATCH 13" crates/codegen/xai-grok-shell/src/util/config/resolve/compaction.rs && echo "13. compaction model config OK" || echo "13. compaction model config MISSING!"

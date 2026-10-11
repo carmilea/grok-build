@@ -2590,6 +2590,43 @@ pub async fn run_update(
     update_config: &mut UpdateConfig,
     trigger: CliUpdateTrigger,
 ) -> Result<Option<String>> {
+    // AUTO-UPDATE HARD-DISABLED (local fork patch 10, second site).
+    //
+    // This is the `grok update` subcommand's entry point. At upstream 1.0.38
+    // the CLI dispatched through `run_update_if_available()`, so the patch
+    // below covered it; in the 1.0.45 gap upstream promoted `run_update()` to
+    // the direct CLI caller (pager-bin/src/main.rs), which walked straight
+    // past that guard. One command then downloaded a stock upstream build and
+    // installed it over this one — silently reverting every patch in
+    // PATCH.md, not merely making one request. That is categorically worse
+    // than the explicit-user-action carve-outs elsewhere (`grok setup`), so
+    // unlike those this one refuses.
+    //
+    // Refusing by printing the correct command and writing nothing mirrors
+    // what upstream 1.0.42 already does on WinGet (see the hand_off_message
+    // branch below), so the shape is upstream's, not an invention.
+    //
+    // `Ok(None)` means "no new version on disk", which stops the caller
+    // signalling a leader relaunch.
+    let fork_self_update_disabled = true;
+    if fork_self_update_disabled {
+        let _ = (force, pinned_version, channel_switch, trigger);
+        let _ = &update_config;
+        eprintln!(
+            "grok update is disabled in this fork.\n\
+             \n\
+             It installs stock xai-org/grok-build, which would replace this\n\
+             privacy-hardened build and re-enable telemetry, error reporting\n\
+             and the managed-config sync. Upgrade the fork instead:\n\
+             \n\
+             \x20 brew update && brew upgrade carmilea/grok/grok\n\
+             \x20 curl -fsSL https://raw.githubusercontent.com/carmilea/grok-build/main/install.sh | sh\n\
+             \n\
+             Releases: https://github.com/carmilea/grok-build/releases"
+        );
+        return Ok(None);
+    }
+
     let installer = get_installer().await;
     let policy = config::VersionPolicy::resolve();
     if let Some(version) = pinned_version

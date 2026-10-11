@@ -45,6 +45,7 @@ disappears in a merge, the patch is gone — re-apply.
 | 8 | Session sharing stripped | `handle_share_session()` | `.../src/extensions/share.rs` | `SESSION SHARING REMOVED` |
 | 9 | Web-search backends (feature) | `WebSearchClient` dispatch + `spawn.rs` mapping | `xai-grok-tools/.../web_search/{types,client}.rs`, `.../acp_session_impl/spawn.rs` | `FORK PATCH 9` |
 | 10 | Auto-update disabled | `run_update_if_available()` + `check_update_background()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
+| 10b | `grok update` subcommand refuses | `run_update()` | `crates/codegen/xai-grok-update/src/auto_update.rs` | `AUTO-UPDATE HARD-DISABLED` |
 | 11 | Feedback trace upload disabled | `handle_upload_trace_with_session_dir()` | `crates/codegen/xai-grok-shell/src/extensions/feedback_trace.rs` | `FEEDBACK TRACE UPLOAD HARD-DISABLED` |
 | 12 | Side-call bearer xAI-only | `byok_from_models()` | `crates/codegen/xai-grok-shell/src/agent/mvp_agent/agent_ops.rs` | `BYOK SIDE-CALL BEARER XAI-ONLY` |
 | 13 | Compaction model+effort pinning (feature) | `SessionActor::compaction_sampling_config()` + `resolve_compaction_model()`/`resolve_compaction_effort()` | `.../src/util/config/resolve/compaction.rs`, `.../src/session/compaction.rs`, `.../src/agent/config.rs`, `.../src/session/helpers/session_compact.rs` | `FORK PATCH 13` |
@@ -298,12 +299,37 @@ sites that only appear in test code) flags them with a missing-field error.
 Upstream's updater (default ON) downloads upstream release binaries and
 installs them in place — on this fork that silently replaces the patched
 build with a pristine upstream one. Early-return both entry points:
-`run_update_if_available()` → `Ok(false)` (covers manual `grok update` and
-exit-time apply) and `check_update_background()` →
-`BackgroundUpdateCheck::none()` (also kills the release-channel phone-home).
+`run_update_if_available()` → `Ok(false)` (exit-time apply) and
+`check_update_background()` → `BackgroundUpdateCheck::none()` (also kills the
+release-channel phone-home).
 `[cli] auto_update = false` in the user's config.toml is the config-level
 belt; the code patch is the suspenders. Fork updates arrive only via this
 runbook's weekly sync.
+
+**Patch 10b — the `grok update` subcommand.** At 1.0.38 the CLI dispatched
+through `run_update_if_available()`, so the two sites above covered the
+manual command too (this recipe used to say so). In the 1.0.45 gap upstream
+promoted `run_update()` to the CLI's direct entry point
+(`pager-bin/src/main.rs`), and `grok update` walked straight past both
+guards: one command downloaded a stock upstream build and installed it over
+the fork. Unlike the explicit-user-action carve-outs elsewhere (`grok setup`
+skipping patch 6), this one does not merely make a request — it reverts every
+patch in this file at once, so it refuses rather than proceeds.
+
+Re-apply at the top of `run_update()`, before `get_installer()`: the house
+`let fork_self_update_disabled = true; if … { return Ok(None); }` idiom,
+printing the fork's own upgrade commands (brew / `install.sh` / Releases).
+`Ok(None)` means "no new version on disk", which stops the caller signalling
+a leader relaunch. Printing a command and writing nothing mirrors what
+upstream 1.0.42 already does on the WinGet path, so the shape is upstream's.
+
+Two audit checks back this up, because the marker grep alone did not: one
+asserts the refusal precedes `get_installer()` **and** that the flag is
+literally `true` (a marker-only check passes when someone flips it to
+`false` — verified by disarming the guard and watching the check go red),
+and one asserts the update entry points have no caller outside the reviewed
+CLI dispatch, so a third door added upstream fails the audit instead of
+shipping.
 
 ### Patch 11 — feedback trace upload disabled (extensions/feedback_trace.rs)
 
