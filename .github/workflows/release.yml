@@ -241,7 +241,11 @@ jobs:
             if [ -n "$prev_revision" ]; then
               sed -i "s|^  revision [0-9][0-9]*\$|  revision ${next}|" "$formula"
             else
-              awk -v n="$next" '{print} /^  sha256 / && !d {print "  revision " n; d=1}' \
+              # Anchor on `license`, not `sha256`: Homebrew's component order
+              # is url, version, sha256, license, revision, and `brew audit`
+              # fails with "license should be put before revision" if the line
+              # lands directly after sha256.
+              awk -v n="$next" '{print} /^  license / && !d {print "  revision " n; d=1}' \
                 "$formula" > "$formula.tmp" && mv "$formula.tmp" "$formula"
             fi
           fi
